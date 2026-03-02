@@ -1,4 +1,4 @@
-# Morning Scanner
+# Trader's Automated News Scanner
 
 A real-time news and SEC filing scanner for active traders on Windows. Morning Scanner watches your TradeStation Market Depth window, detects which ticker you're viewing, and automatically pulls up relevant news headlines, SEC filing activity, float data, short interest, and shelf registration status.
 
