@@ -2,6 +2,8 @@
 
 A real-time news and SEC filing scanner for active traders on Windows. Morning Scanner watches your TradeStation Market Depth window, detects which ticker you're viewing, and automatically pulls up relevant news headlines, SEC filing activity, float data, short interest, and shelf registration status.
 
+<img width="1034" height="628" alt="screenshot_sample" src="https://github.com/user-attachments/assets/ec724f7b-8750-47bb-8372-335563673ede" />
+
 ---
 
 ## Features
@@ -127,3 +129,4 @@ pyinstaller --onefile --noconsole --name Scanner_SEC --icon icon2.ico ^
 - SEC filing detection (shelf registration, recent filings) is based on HTML scraping and **is not guaranteed to be accurate or complete**. Always verify filings directly on [EDGAR](https://www.sec.gov/edgar/searchedgar/companysearch).
 - The authors and contributors of this software accept **no liability** for any trading losses, errors, or damages arising from the use of this tool.
 - **Use at your own risk.** You are solely responsible for your own trading decisions.
+
