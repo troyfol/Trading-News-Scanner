@@ -1,0 +1,1476 @@
+{
+  "errors": [],
+  "issuers_scraped": [
+    "Direxion",
+    "GraniteShares",
+    "T-Rex",
+    "Tradr",
+    "Defiance"
+  ],
+  "refreshed_at": "2026-05-24T02:42:56+00:00",
+  "schema_version": 1,
+  "underlyings": {
+    "AAOI": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "AAOX"
+      }
+    ],
+    "AAPL": [
+      {
+        "issuer": "GraniteShares",
+        "mult": 2.0,
+        "ticker": "AAPB"
+      },
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "AAPU"
+      },
+      {
+        "issuer": "T-Rex",
+        "mult": 2.0,
+        "ticker": "AAPX"
+      },
+      {
+        "issuer": "Direxion",
+        "mult": -1.0,
+        "ticker": "AAPD"
+      }
+    ],
+    "ACHR": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "ARCX"
+      }
+    ],
+    "ADBE": [
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "ADBU"
+      }
+    ],
+    "AFRM": [
+      {
+        "issuer": "T-Rex",
+        "mult": 2.0,
+        "ticker": "AFRU"
+      }
+    ],
+    "ALAB": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "LABX"
+      }
+    ],
+    "AMAT": [
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "AMA"
+      }
+    ],
+    "AMD": [
+      {
+        "issuer": "GraniteShares",
+        "mult": 2.0,
+        "ticker": "AMDL"
+      },
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "AMUU"
+      },
+      {
+        "issuer": "Defiance",
+        "mult": -2.0,
+        "ticker": "DAMD"
+      },
+      {
+        "issuer": "Direxion",
+        "mult": -1.0,
+        "ticker": "AMDD"
+      }
+    ],
+    "AMKR": [
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "AMKL"
+      }
+    ],
+    "AMPX": [
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "AMPU"
+      }
+    ],
+    "AMZN": [
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "AMZU"
+      },
+      {
+        "issuer": "GraniteShares",
+        "mult": 2.0,
+        "ticker": "AMZZ"
+      },
+      {
+        "issuer": "Tradr",
+        "mult": -2.0,
+        "ticker": "AMZO"
+      },
+      {
+        "issuer": "Direxion",
+        "mult": -1.0,
+        "ticker": "AMZD"
+      }
+    ],
+    "ANET": [
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "ANEL"
+      }
+    ],
+    "APH": [
+      {
+        "issuer": "T-Rex",
+        "mult": 2.0,
+        "ticker": "APHU"
+      }
+    ],
+    "APLD": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "APLX"
+      },
+      {
+        "issuer": "Tradr",
+        "mult": -2.0,
+        "ticker": "APLZ"
+      }
+    ],
+    "APP": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "APPX"
+      }
+    ],
+    "ASML": [
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "ASMU"
+      }
+    ],
+    "ASTS": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "ASTX"
+      },
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "ASTY"
+      },
+      {
+        "issuer": "T-Rex",
+        "mult": 2.0,
+        "ticker": "ASUP"
+      },
+      {
+        "issuer": "Defiance",
+        "mult": -2.0,
+        "ticker": "ASTN"
+      }
+    ],
+    "AVAV": [
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "AVXX"
+      }
+    ],
+    "AVGO": [
+      {
+        "issuer": "GraniteShares",
+        "mult": 2.0,
+        "ticker": "AVGU"
+      },
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "AVGX"
+      },
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "AVL"
+      },
+      {
+        "issuer": "Direxion",
+        "mult": -1.0,
+        "ticker": "AVS"
+      }
+    ],
+    "AXTI": [
+      {
+        "issuer": "T-Rex",
+        "mult": 2.0,
+        "ticker": "AXTU"
+      },
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "AXTX"
+      }
+    ],
+    "B": [
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "BU"
+      }
+    ],
+    "BA": [
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "BOEU"
+      }
+    ],
+    "BABA": [
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "BABU"
+      },
+      {
+        "issuer": "GraniteShares",
+        "mult": 2.0,
+        "ticker": "BABX"
+      }
+    ],
+    "BE": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "BEX"
+      },
+      {
+        "issuer": "Tradr",
+        "mult": -2.0,
+        "ticker": "BEZ"
+      }
+    ],
+    "BMNR": [
+      {
+        "issuer": "T-Rex",
+        "mult": 2.0,
+        "ticker": "BMNU"
+      },
+      {
+        "issuer": "Defiance",
+        "mult": -2.0,
+        "ticker": "BMNZ"
+      }
+    ],
+    "BRKB": [
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "BRKU"
+      }
+    ],
+    "CEG": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "CEGX"
+      }
+    ],
+    "CLS": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "CSEX"
+      }
+    ],
+    "CLSK": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "CLSX"
+      },
+      {
+        "issuer": "Tradr",
+        "mult": -2.0,
+        "ticker": "CLSZ"
+      }
+    ],
+    "COHR": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "COHX"
+      }
+    ],
+    "COIN": [
+      {
+        "issuer": "GraniteShares",
+        "mult": 2.0,
+        "ticker": "CONL"
+      },
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "CONX"
+      },
+      {
+        "issuer": "GraniteShares",
+        "mult": -2.0,
+        "ticker": "CONI"
+      }
+    ],
+    "CORZ": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "COZX"
+      }
+    ],
+    "CPNG": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "CPNX"
+      }
+    ],
+    "CRCL": [
+      {
+        "issuer": "T-Rex",
+        "mult": 2.0,
+        "ticker": "CCUP"
+      },
+      {
+        "issuer": "T-Rex",
+        "mult": -2.0,
+        "ticker": "CRCD"
+      }
+    ],
+    "CRDO": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "CRDU"
+      }
+    ],
+    "CRML": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "CRMX"
+      }
+    ],
+    "CRWD": [
+      {
+        "issuer": "GraniteShares",
+        "mult": 2.0,
+        "ticker": "CRWL"
+      }
+    ],
+    "CRWV": [
+      {
+        "issuer": "T-Rex",
+        "mult": 2.0,
+        "ticker": "CRWU"
+      },
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "CWVX"
+      },
+      {
+        "issuer": "T-Rex",
+        "mult": -2.0,
+        "ticker": "CORD"
+      }
+    ],
+    "CSCO": [
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "CSCL"
+      },
+      {
+        "issuer": "Direxion",
+        "mult": -1.0,
+        "ticker": "CSCS"
+      }
+    ],
+    "CVNA": [
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "CVNX"
+      }
+    ],
+    "DELL": [
+      {
+        "issuer": "GraniteShares",
+        "mult": 2.0,
+        "ticker": "DLLL"
+      }
+    ],
+    "DJT": [
+      {
+        "issuer": "T-Rex",
+        "mult": 2.0,
+        "ticker": "DJTU"
+      }
+    ],
+    "DKNG": [
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "DKNX"
+      }
+    ],
+    "EOSE": [
+      {
+        "issuer": "T-Rex",
+        "mult": 2.0,
+        "ticker": "EOSU"
+      }
+    ],
+    "ETOR": [
+      {
+        "issuer": "GraniteShares",
+        "mult": 2.0,
+        "ticker": "ETRL"
+      }
+    ],
+    "FIGR": [
+      {
+        "issuer": "T-Rex",
+        "mult": 2.0,
+        "ticker": "FGRU"
+      }
+    ],
+    "FLY": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "FLYT"
+      }
+    ],
+    "GEV": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "GEVX"
+      }
+    ],
+    "GLXY": [
+      {
+        "issuer": "T-Rex",
+        "mult": 2.0,
+        "ticker": "GLXU"
+      }
+    ],
+    "GME": [
+      {
+        "issuer": "T-Rex",
+        "mult": 2.0,
+        "ticker": "GMEU"
+      }
+    ],
+    "GOOG": [
+      {
+        "issuer": "T-Rex",
+        "mult": 2.0,
+        "ticker": "GOOX"
+      }
+    ],
+    "GOOGL": [
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "GGLL"
+      },
+      {
+        "issuer": "GraniteShares",
+        "mult": 2.0,
+        "ticker": "GOU"
+      },
+      {
+        "issuer": "Direxion",
+        "mult": -1.0,
+        "ticker": "GGLS"
+      }
+    ],
+    "HIMS": [
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "HIMZ"
+      }
+    ],
+    "HL": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "HLXX"
+      }
+    ],
+    "HOOD": [
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "HODU"
+      },
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "HOOX"
+      },
+      {
+        "issuer": "T-Rex",
+        "mult": 2.0,
+        "ticker": "ROBN"
+      },
+      {
+        "issuer": "Defiance",
+        "mult": -2.0,
+        "ticker": "HOOZ"
+      }
+    ],
+    "IBM": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "IBX"
+      }
+    ],
+    "INTC": [
+      {
+        "issuer": "GraniteShares",
+        "mult": 2.0,
+        "ticker": "INTW"
+      },
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "LINT"
+      }
+    ],
+    "IONQ": [
+      {
+        "issuer": "GraniteShares",
+        "mult": 2.0,
+        "ticker": "IONL"
+      },
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "IONX"
+      },
+      {
+        "issuer": "Defiance",
+        "mult": -2.0,
+        "ticker": "IONZ"
+      }
+    ],
+    "IREN": [
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "IRE"
+      },
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "IREX"
+      },
+      {
+        "issuer": "Tradr",
+        "mult": -2.0,
+        "ticker": "IREZ"
+      }
+    ],
+    "ISRG": [
+      {
+        "issuer": "GraniteShares",
+        "mult": 2.0,
+        "ticker": "ISUL"
+      }
+    ],
+    "JOBY": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "JOBX"
+      }
+    ],
+    "KEEL": [
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "KEEX"
+      }
+    ],
+    "KTOS": [
+      {
+        "issuer": "T-Rex",
+        "mult": 2.0,
+        "ticker": "KTUP"
+      }
+    ],
+    "LCID": [
+      {
+        "issuer": "GraniteShares",
+        "mult": 2.0,
+        "ticker": "LCDL"
+      }
+    ],
+    "LEU": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "LEUX"
+      }
+    ],
+    "LITE": [
+      {
+        "issuer": "T-Rex",
+        "mult": 2.0,
+        "ticker": "LITU"
+      },
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "LITX"
+      },
+      {
+        "issuer": "Tradr",
+        "mult": -2.0,
+        "ticker": "LITZ"
+      }
+    ],
+    "LLY": [
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "ELIL"
+      },
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "LLYX"
+      }
+    ],
+    "LMND": [
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "LMNX"
+      }
+    ],
+    "LMT": [
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "LMTL"
+      }
+    ],
+    "LRCX": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "LRCU"
+      }
+    ],
+    "LUNR": [
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "LUNL"
+      }
+    ],
+    "MARA": [
+      {
+        "issuer": "GraniteShares",
+        "mult": 2.0,
+        "ticker": "MRAL"
+      }
+    ],
+    "META": [
+      {
+        "issuer": "GraniteShares",
+        "mult": 2.0,
+        "ticker": "FBL"
+      },
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "METU"
+      },
+      {
+        "issuer": "Direxion",
+        "mult": -1.0,
+        "ticker": "METD"
+      }
+    ],
+    "MP": [
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "MPL"
+      }
+    ],
+    "MPWR": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "MPWX"
+      }
+    ],
+    "MRNA": [
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "MRNX"
+      }
+    ],
+    "MRVL": [
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "MRVU"
+      },
+      {
+        "issuer": "GraniteShares",
+        "mult": 2.0,
+        "ticker": "MVLL"
+      }
+    ],
+    "MSFT": [
+      {
+        "issuer": "GraniteShares",
+        "mult": 2.0,
+        "ticker": "MSFL"
+      },
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "MSFU"
+      },
+      {
+        "issuer": "T-Rex",
+        "mult": 2.0,
+        "ticker": "MSFX"
+      },
+      {
+        "issuer": "Direxion",
+        "mult": -1.0,
+        "ticker": "MSFD"
+      }
+    ],
+    "MSTR": [
+      {
+        "issuer": "GraniteShares",
+        "mult": 2.0,
+        "ticker": "MSTP"
+      },
+      {
+        "issuer": "T-Rex",
+        "mult": 2.0,
+        "ticker": "MSTU"
+      },
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "MSTX"
+      },
+      {
+        "issuer": "GraniteShares",
+        "mult": -2.0,
+        "ticker": "MSDD"
+      },
+      {
+        "issuer": "T-Rex",
+        "mult": -2.0,
+        "ticker": "MSTZ"
+      },
+      {
+        "issuer": "Defiance",
+        "mult": -2.0,
+        "ticker": "SMST"
+      }
+    ],
+    "MU": [
+      {
+        "issuer": "GraniteShares",
+        "mult": 2.0,
+        "ticker": "MULL"
+      },
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "MUU"
+      },
+      {
+        "issuer": "Direxion",
+        "mult": -1.0,
+        "ticker": "MUD"
+      }
+    ],
+    "NBIS": [
+      {
+        "issuer": "GraniteShares",
+        "mult": 2.0,
+        "ticker": "NBIL"
+      },
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "NEBX"
+      },
+      {
+        "issuer": "Tradr",
+        "mult": -2.0,
+        "ticker": "NBIZ"
+      }
+    ],
+    "NFLX": [
+      {
+        "issuer": "T-Rex",
+        "mult": 2.0,
+        "ticker": "NFLU"
+      },
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "NFXL"
+      },
+      {
+        "issuer": "Direxion",
+        "mult": -1.0,
+        "ticker": "NFXS"
+      }
+    ],
+    "NOK": [
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "LNOK"
+      }
+    ],
+    "NOW": [
+      {
+        "issuer": "GraniteShares",
+        "mult": 2.0,
+        "ticker": "NOWL"
+      }
+    ],
+    "NVDA": [
+      {
+        "issuer": "GraniteShares",
+        "mult": 2.0,
+        "ticker": "NVDL"
+      },
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "NVDU"
+      },
+      {
+        "issuer": "T-Rex",
+        "mult": 2.0,
+        "ticker": "NVDX"
+      },
+      {
+        "issuer": "GraniteShares",
+        "mult": -2.0,
+        "ticker": "NVD"
+      },
+      {
+        "issuer": "T-Rex",
+        "mult": -2.0,
+        "ticker": "NVDQ"
+      },
+      {
+        "issuer": "Tradr",
+        "mult": -1.5,
+        "ticker": "NVDS"
+      },
+      {
+        "issuer": "Direxion",
+        "mult": -1.0,
+        "ticker": "NVDD"
+      }
+    ],
+    "NVO": [
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "NVOX"
+      }
+    ],
+    "NVTS": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "NVTX"
+      }
+    ],
+    "OKLO": [
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "OKLL"
+      },
+      {
+        "issuer": "Defiance",
+        "mult": -2.0,
+        "ticker": "OKLS"
+      }
+    ],
+    "ONDS": [
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "ONDL"
+      },
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "ONDU"
+      }
+    ],
+    "OPEN": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "OPEX"
+      }
+    ],
+    "ORCL": [
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "ORCU"
+      },
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "ORCX"
+      },
+      {
+        "issuer": "Direxion",
+        "mult": -1.0,
+        "ticker": "ORCS"
+      }
+    ],
+    "OSCR": [
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "OSCX"
+      }
+    ],
+    "PAAS": [
+      {
+        "issuer": "T-Rex",
+        "mult": 2.0,
+        "ticker": "PAAU"
+      }
+    ],
+    "PANW": [
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "PALU"
+      },
+      {
+        "issuer": "Direxion",
+        "mult": -1.0,
+        "ticker": "PALD"
+      }
+    ],
+    "PATH": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "PATX"
+      }
+    ],
+    "PDD": [
+      {
+        "issuer": "GraniteShares",
+        "mult": 2.0,
+        "ticker": "PDDL"
+      }
+    ],
+    "PL": [
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "PLU"
+      }
+    ],
+    "PLTR": [
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "PLTU"
+      },
+      {
+        "issuer": "GraniteShares",
+        "mult": 2.0,
+        "ticker": "PTIR"
+      },
+      {
+        "issuer": "Defiance",
+        "mult": -2.0,
+        "ticker": "PLTZ"
+      },
+      {
+        "issuer": "Direxion",
+        "mult": -1.0,
+        "ticker": "PLTD"
+      }
+    ],
+    "POET": [
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "POEL"
+      }
+    ],
+    "PONY": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "PONX"
+      }
+    ],
+    "PYPL": [
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "PYPU"
+      }
+    ],
+    "QBTS": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "QBTX"
+      },
+      {
+        "issuer": "Defiance",
+        "mult": -2.0,
+        "ticker": "QBTZ"
+      }
+    ],
+    "QCOM": [
+      {
+        "issuer": "GraniteShares",
+        "mult": 2.0,
+        "ticker": "QCML"
+      },
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "QCMU"
+      },
+      {
+        "issuer": "Direxion",
+        "mult": -1.0,
+        "ticker": "QCMD"
+      }
+    ],
+    "QS": [
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "QSU"
+      }
+    ],
+    "QUBT": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "QUBX"
+      }
+    ],
+    "RBLX": [
+      {
+        "issuer": "T-Rex",
+        "mult": 2.0,
+        "ticker": "RBLU"
+      }
+    ],
+    "RCAT": [
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "RCAX"
+      }
+    ],
+    "RDDT": [
+      {
+        "issuer": "GraniteShares",
+        "mult": 2.0,
+        "ticker": "RDTL"
+      }
+    ],
+    "RGTI": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "RGTU"
+      },
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "RGTX"
+      },
+      {
+        "issuer": "Defiance",
+        "mult": -2.0,
+        "ticker": "RGTZ"
+      }
+    ],
+    "RIOT": [
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "RIOX"
+      }
+    ],
+    "RIVN": [
+      {
+        "issuer": "GraniteShares",
+        "mult": 2.0,
+        "ticker": "RVNL"
+      }
+    ],
+    "RKLB": [
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "RKLX"
+      },
+      {
+        "issuer": "Defiance",
+        "mult": -2.0,
+        "ticker": "RKLZ"
+      }
+    ],
+    "RKT": [
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "RKTL"
+      }
+    ],
+    "SBET": [
+      {
+        "issuer": "T-Rex",
+        "mult": 2.0,
+        "ticker": "SBTU"
+      }
+    ],
+    "SHOP": [
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "SHPU"
+      }
+    ],
+    "SMCI": [
+      {
+        "issuer": "GraniteShares",
+        "mult": 2.0,
+        "ticker": "SMCL"
+      },
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "SMCX"
+      },
+      {
+        "issuer": "Defiance",
+        "mult": -2.0,
+        "ticker": "SMCZ"
+      }
+    ],
+    "SMR": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "SMU"
+      },
+      {
+        "issuer": "T-Rex",
+        "mult": 2.0,
+        "ticker": "SMUP"
+      },
+      {
+        "issuer": "Tradr",
+        "mult": -2.0,
+        "ticker": "SMZ"
+      }
+    ],
+    "SNDK": [
+      {
+        "issuer": "T-Rex",
+        "mult": 2.0,
+        "ticker": "SNDU"
+      },
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "SNXX"
+      },
+      {
+        "issuer": "Tradr",
+        "mult": -2.0,
+        "ticker": "SNDQ"
+      }
+    ],
+    "SNOW": [
+      {
+        "issuer": "T-Rex",
+        "mult": 2.0,
+        "ticker": "SNOU"
+      }
+    ],
+    "SOFI": [
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "SOFA"
+      },
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "SOFX"
+      }
+    ],
+    "SOUN": [
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "SOUX"
+      }
+    ],
+    "SRPT": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "SRPU"
+      }
+    ],
+    "STX": [
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "STXL"
+      },
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "STXX"
+      }
+    ],
+    "TEM": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "TEMT"
+      }
+    ],
+    "TSLA": [
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "TSLL"
+      },
+      {
+        "issuer": "GraniteShares",
+        "mult": 2.0,
+        "ticker": "TSLR"
+      },
+      {
+        "issuer": "T-Rex",
+        "mult": 2.0,
+        "ticker": "TSLT"
+      },
+      {
+        "issuer": "GraniteShares",
+        "mult": -2.0,
+        "ticker": "TSDD"
+      },
+      {
+        "issuer": "Tradr",
+        "mult": -2.0,
+        "ticker": "TSLQ"
+      },
+      {
+        "issuer": "T-Rex",
+        "mult": -2.0,
+        "ticker": "TSLZ"
+      },
+      {
+        "issuer": "GraniteShares",
+        "mult": 1.25,
+        "ticker": "TSL"
+      },
+      {
+        "issuer": "Direxion",
+        "mult": -1.0,
+        "ticker": "TSLS"
+      }
+    ],
+    "TSM": [
+      {
+        "issuer": "GraniteShares",
+        "mult": 2.0,
+        "ticker": "TSMU"
+      },
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "TSMX"
+      },
+      {
+        "issuer": "Defiance",
+        "mult": -2.0,
+        "ticker": "STSM"
+      },
+      {
+        "issuer": "Direxion",
+        "mult": -1.0,
+        "ticker": "TSMZ"
+      }
+    ],
+    "TTD": [
+      {
+        "issuer": "T-Rex",
+        "mult": 2.0,
+        "ticker": "TTDU"
+      }
+    ],
+    "TXN": [
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "TXNU"
+      }
+    ],
+    "U": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "UNX"
+      }
+    ],
+    "UBER": [
+      {
+        "issuer": "GraniteShares",
+        "mult": 2.0,
+        "ticker": "UBRL"
+      }
+    ],
+    "UNH": [
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "UNHU"
+      }
+    ],
+    "UPST": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "UPSX"
+      }
+    ],
+    "USAR": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "USAX"
+      }
+    ],
+    "VRT": [
+      {
+        "issuer": "GraniteShares",
+        "mult": 2.0,
+        "ticker": "VRTL"
+      }
+    ],
+    "VST": [
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "VSTL"
+      }
+    ],
+    "WDC": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "WDCX"
+      }
+    ],
+    "WULF": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "WULX"
+      }
+    ],
+    "XNDU": [
+      {
+        "issuer": "Tradr",
+        "mult": 2.0,
+        "ticker": "XNDX"
+      }
+    ],
+    "XOM": [
+      {
+        "issuer": "Direxion",
+        "mult": 2.0,
+        "ticker": "XOMX"
+      }
+    ],
+    "XOVR": [
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "XOVL"
+      }
+    ],
+    "ZETA": [
+      {
+        "issuer": "Defiance",
+        "mult": 2.0,
+        "ticker": "ZETX"
+      }
+    ]
+  }
+}

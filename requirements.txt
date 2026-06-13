@@ -1,0 +1,31 @@
+# MorningScanner runtime dependencies, pinned to the validated build
+# environment (Python 3.11) as of the 2026-06-09 hardening pass.
+#
+# Rebuild the exe from an environment matching these pins so a rebuild
+# can't silently ship untested library versions.
+
+# --- Core ---
+requests==2.32.5
+beautifulsoup4==4.13.4
+soupsieve==2.7           # beautifulsoup4 dependency (pinned for reproducibility)
+lxml==6.0.2             # optional bs4 parser backend
+pywin32==304            # win32gui / pythoncom — TS/TV watchers + COM init
+keyring==25.7.0         # Polygon API key in Windows Credential Manager
+pyarrow==21.0.0         # earnings parquet read
+pandas==2.2.3
+numpy==2.0.2
+matplotlib==3.10.0      # earnings-chart popup (TkAgg)
+feedparser==6.0.12      # RSS wires
+sgmllib3k==1.0.0        # feedparser dependency
+tzdata==2025.2          # zoneinfo (ET wire dating)
+
+# --- Conditional / optional ---
+# rapidfuzz: faster CIK name matching. The code falls back to the stdlib
+# `difflib` when it is absent (CIKResolver._ratio), so it is NOT required
+# for correctness — only speed.
+# rapidfuzz==3.*
+#
+# comtypes: required ONLY for the TITAN UIA watch mode (TitanWindowWatcher).
+# The default TS mode (win32gui) and TV mode need only pywin32. Install it
+# (and re-add it to the spec's hiddenimports) if TITAN mode must ship.
+# comtypes==1.*
