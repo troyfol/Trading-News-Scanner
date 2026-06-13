@@ -27,7 +27,10 @@ README_OLD.md
 readme2.md
 old/
 
-# Alternate build specs / icons for unshipped forks (kept locally)
+# Local / alternate build specs + icons not shipped in this repo (kept locally).
+# MS_ZACKS.spec is the maintainer's private working build; the public build
+# spec is TNS.spec (produces TNS.exe).
+MS_ZACKS.spec
 Scanner_Universal.spec
 Universal_SG.spec
 icon2.ico

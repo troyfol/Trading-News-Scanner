@@ -84,7 +84,7 @@ A PyInstaller spec is included:
 
 ```bash
 pip install pyinstaller
-pyinstaller MS_ZACKS.spec
+pyinstaller TNS.spec
 ```
 
 This bundles Tcl/Tk, the `single_stock_etfs.json` seed, and the keyring/pyarrow/matplotlib backends. TITAN (UIA) mode additionally requires `comtypes` to be installed in the build environment and listed in the spec's `hiddenimports`.

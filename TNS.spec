@@ -18,7 +18,7 @@ if not _gen_files:
     # Non-fatal, but surface it: a silently-empty glob ships an exe whose
     # TITAN (UIA) watch mode hangs at runtime. Populate gen/ by running the
     # app once in TITAN mode in the build venv (or install comtypes).
-    print("WARNING [MS_ZACKS.spec]: no comtypes/gen/*.py under %r — TITAN "
+    print("WARNING [TNS.spec]: no comtypes/gen/*.py under %r — TITAN "
           "UIA mode will hang in the built exe (TS/TV modes unaffected)."
           % _GEN_DIR)
 
@@ -42,7 +42,7 @@ def _tcltk_paths():
         tk_dir = os.path.join(base, 'tcl', 'tk8.6')
         if all(os.path.exists(p) for p in (tcl_dll, tk_dll, tcl_dir, tk_dir)):
             return tcl_dll, tk_dll, tcl_dir, tk_dir
-    print("WARNING [MS_ZACKS.spec]: could not locate Tcl/Tk 8.6 under any of "
+    print("WARNING [TNS.spec]: could not locate Tcl/Tk 8.6 under any of "
           "%r; using the C:/Python310 literals (build may fail here)."
           % candidates)
     return ('C:/Python310/DLLs/tcl86t.dll', 'C:/Python310/DLLs/tk86t.dll',
@@ -113,7 +113,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='MS_ZACKS',
+    name='TNS',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
