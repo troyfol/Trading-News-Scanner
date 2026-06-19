@@ -916,128 +916,128 @@
     },
     "BUG": {
       "category": "Technology",
-      "count": 32,
-      "date": "Jun 17, 2026",
+      "count": 33,
+      "date": "Jun 18, 2026",
       "holdings": [
         {
           "name": "Fortinet, Inc.",
           "ticker": "FTNT",
-          "weight": 8.27
-        },
-        {
-          "name": "Okta, Inc.",
-          "ticker": "OKTA",
-          "weight": 7.49
+          "weight": 8.17
         },
         {
           "name": "Palo Alto Networks, Inc.",
           "ticker": "PANW",
-          "weight": 7.4
+          "weight": 7.64
+        },
+        {
+          "name": "Okta, Inc.",
+          "ticker": "OKTA",
+          "weight": 7.61
         },
         {
           "name": "CrowdStrike Holdings, Inc.",
           "ticker": "CRWD",
-          "weight": 7.23
+          "weight": 7.31
         },
         {
           "name": "Akamai Technologies, Inc.",
           "ticker": "AKAM",
-          "weight": 6.09
-        },
-        {
-          "name": "Qualys, Inc.",
-          "ticker": "QLYS",
-          "weight": 4.65
+          "weight": 5.77
         },
         {
           "name": "Rubrik, Inc.",
           "ticker": "RBRK",
-          "weight": 4.63
-        },
-        {
-          "name": "Zscaler, Inc.",
-          "ticker": "ZS",
-          "weight": 4.62
-        },
-        {
-          "name": "Tenable Holdings, Inc.",
-          "ticker": "TENB",
-          "weight": 4.58
-        },
-        {
-          "name": "Varonis Systems, Inc.",
-          "ticker": "VRNS",
-          "weight": 4.58
-        },
-        {
-          "name": "Gen Digital Inc.",
-          "ticker": "GEN",
-          "weight": 4.53
+          "weight": 4.71
         },
         {
           "name": "Commvault Systems, Inc.",
           "ticker": "CVLT",
-          "weight": 4.5
+          "weight": 4.7
+        },
+        {
+          "name": "Tenable Holdings, Inc.",
+          "ticker": "TENB",
+          "weight": 4.59
+        },
+        {
+          "name": "Qualys, Inc.",
+          "ticker": "QLYS",
+          "weight": 4.57
+        },
+        {
+          "name": "Zscaler, Inc.",
+          "ticker": "ZS",
+          "weight": 4.55
+        },
+        {
+          "name": "Varonis Systems, Inc.",
+          "ticker": "VRNS",
+          "weight": 4.53
+        },
+        {
+          "name": "Gen Digital Inc.",
+          "ticker": "GEN",
+          "weight": 4.47
         },
         {
           "name": "SailPoint, Inc.",
           "ticker": "SAIL",
-          "weight": 4.39
+          "weight": 4.17
         },
         {
           "name": "A10 Networks, Inc.",
           "ticker": "ATEN",
-          "weight": 3.91
+          "weight": 4.03
         },
         {
           "name": "Check Point Software Technologies Ltd.",
           "ticker": "CHKP",
-          "weight": 3.86
+          "weight": 3.88
         },
         {
           "name": "SentinelOne, Inc.",
           "ticker": "S",
-          "weight": 3.77
+          "weight": 3.79
         },
         {
           "name": "Trend Micro Incorporated",
           "ticker": "!TYO/4704",
-          "weight": 3.65
+          "weight": 3.75
         },
         {
           "name": "Netskope, Inc.",
           "ticker": "NTSK",
-          "weight": 3.2
+          "weight": 3.24
         },
         {
           "name": "Radware Ltd.",
           "ticker": "RDWR",
-          "weight": 2.05
+          "weight": 1.98
         },
         {
           "name": "OneSpan Inc.",
           "ticker": "OSPN",
-          "weight": 0.89
+          "weight": 0.84
         },
         {
           "name": "NCC Group plc",
           "ticker": "!LON/NCC",
-          "weight": 0.83
+          "weight": 0.8
         },
         {
           "name": "Gorilla Technology Group Inc.",
           "ticker": "GRRR",
-          "weight": 0.81
+          "weight": 0.76
         },
         {
           "name": "Rapid7, Inc.",
           "ticker": "RPD",
-          "weight": 0.77
+          "weight": 0.75
         },
         {
           "name": "AhnLab, Inc.",
           "ticker": "!KOSDAQ/053800",
-          "weight": 0.72
+          "weight": 0.7
         },
         {
           "name": "Telos Corporation",
@@ -1423,6 +1423,14 @@
         }
       ],
       "mult": 3.0,
+      "sector_label": ""
+    },
+    "CWEB": {
+      "category": "Trading--Leveraged Equity",
+      "count": 10,
+      "date": "Jun 16, 2026",
+      "holdings": [],
+      "mult": 2.0,
       "sector_label": ""
     },
     "DDM": {
@@ -2094,6 +2102,14 @@
       "mult": 3.0,
       "sector_label": ""
     },
+    "DRIP": {
+      "category": "Trading--Inverse Equity",
+      "count": 13,
+      "date": "Jun 16, 2026",
+      "holdings": [],
+      "mult": -2.0,
+      "sector_label": ""
+    },
     "DRN": {
       "category": "Trading--Leveraged Equity",
       "count": 40,
@@ -2197,6 +2213,22 @@
       ],
       "mult": 3.0,
       "sector_label": "Real Estate"
+    },
+    "DRV": {
+      "category": "Trading--Inverse Equity",
+      "count": 6,
+      "date": "Jun 17, 2026",
+      "holdings": [],
+      "mult": -3.0,
+      "sector_label": ""
+    },
+    "DUST": {
+      "category": "Trading--Inverse Equity",
+      "count": 12,
+      "date": "Jun 14, 2026",
+      "holdings": [],
+      "mult": -2.0,
+      "sector_label": ""
     },
     "DVY": {
       "category": "Mid-Cap Value",
@@ -2330,6 +2362,14 @@
         }
       ],
       "mult": null,
+      "sector_label": ""
+    },
+    "DXD": {
+      "category": "Trading--Inverse Equity",
+      "count": 10,
+      "date": "Jun 18, 2026",
+      "holdings": [],
+      "mult": -2.0,
       "sector_label": ""
     },
     "EEM": {
@@ -2703,6 +2743,14 @@
       ],
       "mult": 2.0,
       "sector_label": "Energy"
+    },
+    "ERY": {
+      "category": "Trading--Inverse Equity",
+      "count": 9,
+      "date": "Jun 16, 2026",
+      "holdings": [],
+      "mult": -2.0,
+      "sector_label": ""
     },
     "EWJ": {
       "category": "Japan Stock",
@@ -3337,6 +3385,14 @@
         }
       ],
       "mult": 3.0,
+      "sector_label": ""
+    },
+    "FAZ": {
+      "category": "Trading--Inverse Equity",
+      "count": 13,
+      "date": "Jun 16, 2026",
+      "holdings": [],
+      "mult": -3.0,
       "sector_label": ""
     },
     "FINX": {
@@ -5295,7 +5351,7 @@
     },
     "INDA": {
       "category": "India Equity",
-      "count": 172,
+      "count": 174,
       "date": "Jun 17, 2026",
       "holdings": [
         {
@@ -5306,7 +5362,7 @@
         {
           "name": "Reliance Industries Limited",
           "ticker": "!NSE/RELIANCE",
-          "weight": 6.2
+          "weight": 6.21
         },
         {
           "name": "ICICI Bank Limited",
@@ -5324,11 +5380,6 @@
           "weight": 2.7
         },
         {
-          "name": "BLK CSH FND TREASURY SL AGENCY",
-          "ticker": "XTSLA",
-          "weight": 2.36
-        },
-        {
           "name": "Axis Bank Limited",
           "ticker": "!NSE/AXISBANK",
           "weight": 2.3
@@ -5344,6 +5395,11 @@
           "weight": 2.09
         },
         {
+          "name": "BlackRock Cash Funds Treasury SL Agency",
+          "ticker": "XTSLA",
+          "weight": 2.08
+        },
+        {
           "name": "Bajaj Finance Limited",
           "ticker": "!NSE/BAJFINANCE",
           "weight": 1.82
@@ -5356,7 +5412,7 @@
         {
           "name": "State Bank of India",
           "ticker": "!NSE/SBIN",
-          "weight": 1.45
+          "weight": 1.46
         },
         {
           "name": "Tata Consultancy Services Limited",
@@ -5366,7 +5422,7 @@
         {
           "name": "Sun Pharmaceutical Industries Limited",
           "ticker": "!NSE/SUNPHARMA",
-          "weight": 1.25
+          "weight": 1.26
         },
         {
           "name": "Maruti Suzuki India Limited",
@@ -6671,7 +6727,7 @@
         {
           "name": "Realty Income Corporation",
           "ticker": "O",
-          "weight": 4.09
+          "weight": 4.1
         },
         {
           "name": "Public Storage",
@@ -6696,7 +6752,7 @@
         {
           "name": "Iron Mountain Incorporated",
           "ticker": "IRM",
-          "weight": 2.77
+          "weight": 2.78
         },
         {
           "name": "Extra Space Storage Inc.",
@@ -6706,7 +6762,7 @@
         {
           "name": "VICI Properties Inc.",
           "ticker": "VICI",
-          "weight": 2.22
+          "weight": 2.19
         },
         {
           "name": "AvalonBay Communities, Inc.",
@@ -6901,6 +6957,14 @@
       "mult": null,
       "sector_label": "Industrials"
     },
+    "JDST": {
+      "category": "Trading--Inverse Equity",
+      "count": 10,
+      "date": "Jun 14, 2026",
+      "holdings": [],
+      "mult": -2.0,
+      "sector_label": ""
+    },
     "JETS": {
       "category": "Industrials",
       "count": 48,
@@ -7034,6 +7098,14 @@
       ],
       "mult": null,
       "sector_label": "Industrials"
+    },
+    "JNUG": {
+      "category": "Trading--Leveraged Equity",
+      "count": 9,
+      "date": "Jun 16, 2026",
+      "holdings": [],
+      "mult": 2.0,
+      "sector_label": ""
     },
     "KBE": {
       "category": "Financial",
@@ -7437,6 +7509,14 @@
       "mult": null,
       "sector_label": ""
     },
+    "LABD": {
+      "category": "Trading--Inverse Equity",
+      "count": 12,
+      "date": "Jun 16, 2026",
+      "holdings": [],
+      "mult": -3.0,
+      "sector_label": ""
+    },
     "LABU": {
       "category": "Trading--Leveraged Equity",
       "count": 166,
@@ -7658,122 +7738,122 @@
     "MAGS": {
       "category": "Technology",
       "count": 23,
-      "date": "Jun 18, 2026",
+      "date": "Jun 22, 2026",
       "holdings": [
         {
           "name": "United States Treasury Bill 07/14/2026",
           "ticker": "B.0 07.14.26",
-          "weight": 57.23
+          "weight": 57.88
         },
         {
           "name": "ALPHABET INC SWAP GS",
           "ticker": "02079K305.TRS 081426 GS",
-          "weight": 7.45
+          "weight": 7.62
         },
         {
           "name": "Roundhill Ultra Short Duration No Dividend Target ETF",
           "ticker": "#XBOX",
-          "weight": 7.45
+          "weight": 7.31
         },
         {
           "name": "ALPHABET INC-CL A SWAP",
           "ticker": "02079K305.TRS 071426 NM",
-          "weight": 6.75
+          "weight": 6.91
         },
         {
           "name": "AMAZON.COM INC SWAP",
           "ticker": "023135106.TRS 071426 NM",
-          "weight": 6.64
+          "weight": 6.9
         },
         {
           "name": "NVIDIA CORP SWAP",
           "ticker": "67066G104.TRS 071426 NM",
-          "weight": 6.13
+          "weight": 6.38
         },
         {
           "name": "TESLA INC SWAP GS",
           "ticker": "88160R101.TRS 081426 GS",
-          "weight": 6.02
+          "weight": 6.15
         },
         {
           "name": "APPLE INC SWAP",
           "ticker": "037833100.TRS 071426 NM",
-          "weight": 5.93
-        },
-        {
-          "name": "APPLE INC SWAP GS",
-          "ticker": "037833100.TRS 081426 GS",
-          "weight": 5.83
+          "weight": 6.04
         },
         {
           "name": "NVIDIA CORP SWAP",
           "ticker": "67066G104.TRS 081426 GS",
-          "weight": 5.74
+          "weight": 5.97
+        },
+        {
+          "name": "APPLE INC SWAP GS",
+          "ticker": "037833100.TRS 081426 GS",
+          "weight": 5.93
         },
         {
           "name": "META PLATFORMS INC-CLASS A SWAP",
           "ticker": "30303M102.TRS 071426 NM",
-          "weight": 5.39
+          "weight": 5.54
         },
         {
           "name": "MICROSOFT CORP SWAP GS",
           "ticker": "594918104.TRS 081426 GS",
-          "weight": 5.33
+          "weight": 5.4
         },
         {
           "name": "MICROSOFT CORP SWAP",
           "ticker": "594918104.TRS 071426 NM",
-          "weight": 4.97
+          "weight": 5.03
         },
         {
           "name": "AMAZON INC SWAP GS",
           "ticker": "023135106.TRS 081426 GS",
-          "weight": 4.83
+          "weight": 5.02
         },
         {
           "name": "TESLA INC SWAP",
           "ticker": "88160R101.TRS 071426 NM",
-          "weight": 4.71
+          "weight": 4.81
         },
         {
           "name": "META PLATFORMS INC SWAP GS",
           "ticker": "30303M102.TRS 081426 GS",
-          "weight": 4.66
+          "weight": 4.79
         },
         {
           "name": "NVIDIA Corporation",
           "ticker": "NVDA",
-          "weight": 3.15
+          "weight": 2.88
         },
         {
           "name": "Apple Inc.",
           "ticker": "AAPL",
-          "weight": 3.13
+          "weight": 2.8
         },
         {
           "name": "Amazon.com, Inc.",
           "ticker": "AMZN",
-          "weight": 3.04
+          "weight": 2.78
         },
         {
           "name": "Tesla, Inc.",
           "ticker": "TSLA",
-          "weight": 2.85
-        },
-        {
-          "name": "Microsoft Corporation",
-          "ticker": "MSFT",
-          "weight": 2.73
+          "weight": 2.56
         },
         {
           "name": "Meta Platforms, Inc.",
           "ticker": "META",
-          "weight": 2.69
+          "weight": 2.43
+        },
+        {
+          "name": "Microsoft Corporation",
+          "ticker": "MSFT",
+          "weight": 2.43
         },
         {
           "name": "Alphabet Inc.",
           "ticker": "GOOGL",
-          "weight": 1.97
+          "weight": 1.59
         }
       ],
       "mult": null,
@@ -8412,61 +8492,51 @@
     "NOBL": {
       "category": "Large Value",
       "count": 70,
-      "date": "Jun 17, 2026",
+      "date": "Jun 18, 2026",
       "holdings": [
-        {
-          "name": "Franklin Resources, Inc.",
-          "ticker": "BEN",
-          "weight": 1.75
-        },
-        {
-          "name": "Nucor Corporation",
-          "ticker": "NUE",
-          "weight": 1.74
-        },
         {
           "name": "Caterpillar Inc.",
           "ticker": "CAT",
-          "weight": 1.71
+          "weight": 1.77
         },
         {
-          "name": "The J. M. Smucker Company",
-          "ticker": "SJM",
-          "weight": 1.69
+          "name": "Franklin Resources, Inc.",
+          "ticker": "BEN",
+          "weight": 1.74
         },
         {
           "name": "West Pharmaceutical Services, Inc.",
           "ticker": "WST",
-          "weight": 1.69
+          "weight": 1.71
         },
         {
-          "name": "Hormel Foods Corporation",
-          "ticker": "HRL",
-          "weight": 1.64
+          "name": "Nucor Corporation",
+          "ticker": "NUE",
+          "weight": 1.68
         },
         {
           "name": "W.W. Grainger, Inc.",
           "ticker": "GWW",
-          "weight": 1.61
+          "weight": 1.67
         },
         {
-          "name": "General Dynamics Corporation",
-          "ticker": "GD",
-          "weight": 1.6
+          "name": "The J. M. Smucker Company",
+          "ticker": "SJM",
+          "weight": 1.66
+        },
+        {
+          "name": "Stanley Black & Decker, Inc.",
+          "ticker": "SWK",
+          "weight": 1.63
+        },
+        {
+          "name": "Hormel Foods Corporation",
+          "ticker": "HRL",
+          "weight": 1.63
         },
         {
           "name": "Colgate-Palmolive Company",
           "ticker": "CL",
-          "weight": 1.59
-        },
-        {
-          "name": "Cardinal Health, Inc.",
-          "ticker": "CAH",
-          "weight": 1.58
-        },
-        {
-          "name": "Archer-Daniels-Midland Company",
-          "ticker": "ADM",
           "weight": 1.57
         },
         {
@@ -8477,7 +8547,12 @@
         {
           "name": "Federal Realty Investment Trust",
           "ticker": "FRT",
-          "weight": 1.56
+          "weight": 1.55
+        },
+        {
+          "name": "Cardinal Health, Inc.",
+          "ticker": "CAH",
+          "weight": 1.55
         },
         {
           "name": "Essex Property Trust, Inc.",
@@ -8485,24 +8560,19 @@
           "weight": 1.55
         },
         {
-          "name": "Stanley Black & Decker, Inc.",
-          "ticker": "SWK",
-          "weight": 1.55
-        },
-        {
-          "name": "AbbVie Inc.",
-          "ticker": "ABBV",
-          "weight": 1.55
-        },
-        {
           "name": "Automatic Data Processing, Inc.",
           "ticker": "ADP",
-          "weight": 1.55
+          "weight": 1.54
         },
         {
-          "name": "The Coca-Cola Company",
-          "ticker": "KO",
-          "weight": 1.53
+          "name": "Archer-Daniels-Midland Company",
+          "ticker": "ADM",
+          "weight": 1.54
+        },
+        {
+          "name": "General Dynamics Corporation",
+          "ticker": "GD",
+          "weight": 1.54
         },
         {
           "name": "Expeditors International of Washington, Inc.",
@@ -8510,37 +8580,55 @@
           "weight": 1.53
         },
         {
+          "name": "PPG Industries, Inc.",
+          "ticker": "PPG",
+          "weight": 1.53
+        },
+        {
+          "name": "The Coca-Cola Company",
+          "ticker": "KO",
+          "weight": 1.53
+        },
+        {
+          "name": "Kimberly-Clark Corporation",
+          "ticker": "KMB",
+          "weight": 1.52
+        },
+        {
           "name": "The Procter & Gamble Company",
           "ticker": "PG",
           "weight": 1.52
         },
         {
+          "name": "AbbVie Inc.",
+          "ticker": "ABBV",
+          "weight": 1.51
+        },
+        {
           "name": "Sysco Corporation",
           "ticker": "SYY",
-          "weight": 1.52
-        },
-        {
-          "name": "PPG Industries, Inc.",
-          "ticker": "PPG",
           "weight": 1.51
         },
         {
-          "name": "Kimberly-Clark Corporation",
-          "ticker": "KMB",
-          "weight": 1.51
-        },
-        {
-          "name": "Church & Dwight Co., Inc.",
-          "ticker": "CHD",
+          "name": "Kenvue Inc.",
+          "ticker": "KVUE",
           "weight": 1.5
         },
         {
-          "name": "Linde plc",
-          "ticker": "LIN",
+          "name": "Nordson Corporation",
+          "ticker": "NDSN",
           "weight": 1.5
         }
       ],
       "mult": null,
+      "sector_label": ""
+    },
+    "NUGT": {
+      "category": "Trading--Leveraged Equity",
+      "count": 12,
+      "date": "Jun 16, 2026",
+      "holdings": [],
+      "mult": 2.0,
       "sector_label": ""
     },
     "OIH": {
@@ -9303,113 +9391,113 @@
     },
     "QQQM": {
       "category": "Large Growth",
-      "count": 107,
-      "date": "Jun 16, 2026",
+      "count": 106,
+      "date": "Jun 17, 2026",
       "holdings": [
         {
           "name": "NVIDIA Corporation",
           "ticker": "NVDA",
-          "weight": 8.09
+          "weight": 8.06
         },
         {
           "name": "Apple Inc.",
           "ticker": "AAPL",
-          "weight": 7.05
+          "weight": 7.04
         },
         {
           "name": "Micron Technology, Inc.",
           "ticker": "MU",
-          "weight": 5.09
+          "weight": 5.25
         },
         {
           "name": "Microsoft Corporation",
           "ticker": "MSFT",
-          "weight": 4.69
+          "weight": 4.56
         },
         {
           "name": "Amazon.com, Inc.",
           "ticker": "AMZN",
-          "weight": 4.24
+          "weight": 4.13
         },
         {
           "name": "Advanced Micro Devices, Inc.",
           "ticker": "AMD",
-          "weight": 3.66
+          "weight": 3.74
         },
         {
           "name": "Alphabet Inc.",
           "ticker": "GOOGL",
-          "weight": 3.49
+          "weight": 3.43
         },
         {
           "name": "Tesla, Inc.",
           "ticker": "TSLA",
-          "weight": 3.24
+          "weight": 3.21
         },
         {
           "name": "Alphabet Inc.",
           "ticker": "GOOG",
-          "weight": 3.24
+          "weight": 3.19
         },
         {
           "name": "Broadcom Inc.",
           "ticker": "AVGO",
-          "weight": 2.87
+          "weight": 3.02
         },
         {
           "name": "Meta Platforms, Inc.",
           "ticker": "META",
-          "weight": 2.84
-        },
-        {
-          "name": "Walmart Inc.",
-          "ticker": "WMT",
-          "weight": 2.62
+          "weight": 2.71
         },
         {
           "name": "Intel Corporation",
           "ticker": "INTC",
-          "weight": 2.59
+          "weight": 2.71
         },
         {
-          "name": "Cisco Systems, Inc.",
-          "ticker": "CSCO",
-          "weight": 2.09
-        },
-        {
-          "name": "Lam Research Corporation",
-          "ticker": "LRCX",
-          "weight": 2.04
+          "name": "Walmart Inc.",
+          "ticker": "WMT",
+          "weight": 2.58
         },
         {
           "name": "Applied Materials, Inc.",
           "ticker": "AMAT",
-          "weight": 2.0
+          "weight": 2.11
+        },
+        {
+          "name": "Lam Research Corporation",
+          "ticker": "LRCX",
+          "weight": 2.09
+        },
+        {
+          "name": "Cisco Systems, Inc.",
+          "ticker": "CSCO",
+          "weight": 2.07
         },
         {
           "name": "Costco Wholesale Corporation",
           "ticker": "COST",
-          "weight": 1.94
+          "weight": 1.92
         },
         {
           "name": "Netflix, Inc.",
           "ticker": "NFLX",
-          "weight": 1.47
+          "weight": 1.45
         },
         {
           "name": "KLA Corporation",
           "ticker": "KLAC",
-          "weight": 1.38
+          "weight": 1.4
         },
         {
           "name": "Palantir Technologies Inc.",
           "ticker": "PLTR",
-          "weight": 1.35
+          "weight": 1.34
         },
         {
           "name": "Sandisk Corporation",
           "ticker": "SNDK",
-          "weight": 1.3
+          "weight": 1.29
         },
         {
           "name": "Texas Instruments Incorporated",
@@ -9419,17 +9507,17 @@
         {
           "name": "Marvell Technology, Inc.",
           "ticker": "MRVL",
+          "weight": 1.13
+        },
+        {
+          "name": "Western Digital Corporation",
+          "ticker": "WDC",
           "weight": 1.08
         },
         {
           "name": "Linde plc",
           "ticker": "LIN",
-          "weight": 1.06
-        },
-        {
-          "name": "Western Digital Corporation",
-          "ticker": "WDC",
-          "weight": 1.02
+          "weight": 1.07
         }
       ],
       "mult": null,
@@ -10176,98 +10264,98 @@
     },
     "SCHB": {
       "category": "Large Blend",
-      "count": 2410,
-      "date": "Jun 16, 2026",
+      "count": 2409,
+      "date": "Jun 18, 2026",
       "holdings": [
         {
           "name": "NVIDIA Corporation",
           "ticker": "NVDA",
-          "weight": 7.05
+          "weight": 6.92
         },
         {
           "name": "Apple Inc.",
           "ticker": "AAPL",
-          "weight": 5.95
+          "weight": 6.04
         },
         {
           "name": "Microsoft Corporation",
           "ticker": "MSFT",
-          "weight": 4.06
+          "weight": 3.91
         },
         {
           "name": "Amazon.com, Inc.",
           "ticker": "AMZN",
-          "weight": 3.28
+          "weight": 3.23
         },
         {
           "name": "Alphabet Inc.",
           "ticker": "GOOGL",
-          "weight": 2.96
+          "weight": 2.97
         },
         {
           "name": "Broadcom Inc.",
           "ticker": "AVGO",
-          "weight": 2.55
+          "weight": 2.59
         },
         {
           "name": "Alphabet Inc.",
           "ticker": "GOOG",
-          "weight": 2.37
+          "weight": 2.38
         },
         {
           "name": "Meta Platforms, Inc.",
           "ticker": "META",
-          "weight": 1.77
+          "weight": 1.73
         },
         {
           "name": "Micron Technology, Inc.",
           "ticker": "MU",
-          "weight": 1.67
+          "weight": 1.63
         },
         {
           "name": "Tesla, Inc.",
           "ticker": "TSLA",
-          "weight": 1.58
+          "weight": 1.55
         },
         {
           "name": "Berkshire Hathaway Inc.",
           "ticker": "BRK.B",
-          "weight": 1.24
-        },
-        {
-          "name": "Eli Lilly and Company",
-          "ticker": "LLY",
-          "weight": 1.22
-        },
-        {
-          "name": "Advanced Micro Devices, Inc.",
-          "ticker": "AMD",
-          "weight": 1.22
+          "weight": 1.25
         },
         {
           "name": "JPMorgan Chase & Co.",
           "ticker": "JPM",
-          "weight": 1.18
+          "weight": 1.25
         },
         {
-          "name": "Intel Corporation",
-          "ticker": "INTC",
-          "weight": 0.82
+          "name": "Eli Lilly and Company",
+          "ticker": "LLY",
+          "weight": 1.23
+        },
+        {
+          "name": "Advanced Micro Devices, Inc.",
+          "ticker": "AMD",
+          "weight": 1.16
         },
         {
           "name": "Exxon Mobil Corporation",
           "ticker": "XOM",
-          "weight": 0.8
+          "weight": 0.82
+        },
+        {
+          "name": "Intel Corporation",
+          "ticker": "INTC",
+          "weight": 0.79
         },
         {
           "name": "Johnson & Johnson",
           "ticker": "JNJ",
-          "weight": 0.78
+          "weight": 0.79
         },
         {
           "name": "Visa Inc.",
           "ticker": "V",
-          "weight": 0.74
+          "weight": 0.77
         },
         {
           "name": "Walmart Inc.",
@@ -10275,34 +10363,34 @@
           "weight": 0.72
         },
         {
+          "name": "Applied Materials, Inc.",
+          "ticker": "AMAT",
+          "weight": 0.65
+        },
+        {
           "name": "Lam Research Corporation",
           "ticker": "LRCX",
-          "weight": 0.66
+          "weight": 0.65
         },
         {
           "name": "Cisco Systems, Inc.",
           "ticker": "CSCO",
-          "weight": 0.65
-        },
-        {
-          "name": "Applied Materials, Inc.",
-          "ticker": "AMAT",
-          "weight": 0.63
-        },
-        {
-          "name": "Costco Wholesale Corporation",
-          "ticker": "COST",
-          "weight": 0.59
+          "weight": 0.64
         },
         {
           "name": "Caterpillar Inc.",
           "ticker": "CAT",
-          "weight": 0.59
+          "weight": 0.62
+        },
+        {
+          "name": "Costco Wholesale Corporation",
+          "ticker": "COST",
+          "weight": 0.6
         },
         {
           "name": "Mastercard Incorporated",
           "ticker": "MA",
-          "weight": 0.55
+          "weight": 0.56
         }
       ],
       "mult": null,
@@ -10445,72 +10533,72 @@
     "SCHG": {
       "category": "Large Growth",
       "count": 197,
-      "date": "Jun 17, 2026",
+      "date": "Jun 18, 2026",
       "holdings": [
         {
           "name": "NVIDIA Corporation",
           "ticker": "NVDA",
-          "weight": 11.18
+          "weight": 11.19
         },
         {
           "name": "Apple Inc.",
           "ticker": "AAPL",
-          "weight": 9.74
+          "weight": 9.78
         },
         {
           "name": "Microsoft Corporation",
           "ticker": "MSFT",
-          "weight": 6.49
+          "weight": 6.33
         },
         {
           "name": "Amazon.com, Inc.",
           "ticker": "AMZN",
-          "weight": 5.33
+          "weight": 5.22
         },
         {
           "name": "Alphabet Inc.",
           "ticker": "GOOGL",
-          "weight": 4.85
+          "weight": 4.8
         },
         {
           "name": "Broadcom Inc.",
           "ticker": "AVGO",
-          "weight": 3.96
+          "weight": 4.19
         },
         {
           "name": "Alphabet Inc.",
           "ticker": "GOOG",
-          "weight": 3.89
+          "weight": 3.85
         },
         {
           "name": "Tesla, Inc.",
           "ticker": "TSLA",
-          "weight": 3.76
+          "weight": 3.73
         },
         {
           "name": "Meta Platforms, Inc.",
           "ticker": "META",
-          "weight": 3.39
+          "weight": 3.25
         },
         {
           "name": "Eli Lilly and Company",
           "ticker": "LLY",
-          "weight": 3.21
+          "weight": 3.22
         },
         {
           "name": "Advanced Micro Devices, Inc.",
           "ticker": "AMD",
-          "weight": 2.98
+          "weight": 3.06
         },
         {
           "name": "Visa Inc.",
           "ticker": "V",
-          "weight": 2.02
+          "weight": 2.03
         },
         {
           "name": "Costco Wholesale Corporation",
           "ticker": "COST",
-          "weight": 1.58
+          "weight": 1.57
         },
         {
           "name": "Mastercard Incorporated",
@@ -10518,49 +10606,49 @@
           "weight": 1.47
         },
         {
-          "name": "UnitedHealth Group Incorporated",
-          "ticker": "UNH",
-          "weight": 1.33
-        },
-        {
           "name": "GE Aerospace",
           "ticker": "GE",
-          "weight": 1.33
+          "weight": 1.37
+        },
+        {
+          "name": "UnitedHealth Group Incorporated",
+          "ticker": "UNH",
+          "weight": 1.32
         },
         {
           "name": "Netflix, Inc.",
           "ticker": "NFLX",
-          "weight": 1.2
+          "weight": 1.19
         },
         {
           "name": "KLA Corporation",
           "ticker": "KLAC",
-          "weight": 1.12
+          "weight": 1.14
         },
         {
           "name": "Palantir Technologies Inc.",
           "ticker": "PLTR",
-          "weight": 1.1
+          "weight": 1.09
         },
         {
           "name": "GE Vernova Inc.",
           "ticker": "GEV",
-          "weight": 0.96
+          "weight": 1.04
         },
         {
           "name": "Linde plc",
           "ticker": "LIN",
-          "weight": 0.87
+          "weight": 0.88
         },
         {
           "name": "Palo Alto Networks, Inc.",
           "ticker": "PANW",
-          "weight": 0.82
+          "weight": 0.83
         },
         {
           "name": "The Walt Disney Company",
           "ticker": "DIS",
-          "weight": 0.65
+          "weight": 0.66
         },
         {
           "name": "Thermo Fisher Scientific Inc.",
@@ -10568,8 +10656,8 @@
           "weight": 0.64
         },
         {
-          "name": "Arista Networks, Inc.",
-          "ticker": "ANET",
+          "name": "CrowdStrike Holdings, Inc.",
+          "ticker": "CRWD",
           "weight": 0.63
         }
       ],
@@ -11155,6 +11243,14 @@
       "mult": 3.0,
       "sector_label": ""
     },
+    "SOXS": {
+      "category": "Trading--Inverse Equity",
+      "count": 13,
+      "date": "Jun 14, 2026",
+      "holdings": [],
+      "mult": -3.0,
+      "sector_label": ""
+    },
     "SOXX": {
       "category": "Technology",
       "count": 34,
@@ -11288,6 +11384,60 @@
       ],
       "mult": null,
       "sector_label": "Tech"
+    },
+    "SPCL": {
+      "category": "",
+      "count": 13,
+      "date": "Apr 10, 2026",
+      "holdings": [
+        {
+          "name": "ECHOSTAR CORPORATION-SWAP-MREX-L",
+          "ticker": "SATS",
+          "weight": 20.88
+        },
+        {
+          "name": "AST SPACEMOBILE INC.-SWAP-MREX-L",
+          "ticker": "ASTS",
+          "weight": 20.2
+        },
+        {
+          "name": "ROCKET LAB CORPORATION-SWAP-MREX-L",
+          "ticker": "RKLB",
+          "weight": 19.89
+        },
+        {
+          "name": "VIASAT INC.-SWAP-MREX-L",
+          "ticker": "VSAT",
+          "weight": 19.81
+        },
+        {
+          "name": "PLANET LABS PBC-SWAP-MREX-L",
+          "ticker": "PL",
+          "weight": 19.75
+        },
+        {
+          "name": "MERCURY SYSTEMS INC.-SWAP-MREX-L",
+          "ticker": "MRCY",
+          "weight": 19.59
+        },
+        {
+          "name": "MDA SPACE LTD.-SWAP-MREX-L",
+          "ticker": "MDA",
+          "weight": 19.58
+        },
+        {
+          "name": "GLOBALSTAR INC.-SWAP-MREX-L",
+          "ticker": "GSAT",
+          "weight": 19.51
+        },
+        {
+          "name": "KARMAN HOLDINGS INC.-SWAP-MREX-L",
+          "ticker": "KRMN",
+          "weight": 19.11
+        }
+      ],
+      "mult": 2.0,
+      "sector_label": ""
     },
     "SPLV": {
       "category": "Large Value",
@@ -11500,6 +11650,14 @@
         }
       ],
       "mult": 3.0,
+      "sector_label": ""
+    },
+    "SPXS": {
+      "category": "Trading--Inverse Equity",
+      "count": 13,
+      "date": "Jun 16, 2026",
+      "holdings": [],
+      "mult": -3.0,
       "sector_label": ""
     },
     "SPXU": {
@@ -12059,7 +12217,7 @@
         }
       ],
       "mult": null,
-      "sector_label": "Tech"
+      "sector_label": ""
     },
     "TECL": {
       "category": "Trading--Leveraged Equity",
@@ -12140,6 +12298,22 @@
       "mult": 3.0,
       "sector_label": ""
     },
+    "TECS": {
+      "category": "Trading--Inverse Equity",
+      "count": 14,
+      "date": "Jun 14, 2026",
+      "holdings": [],
+      "mult": -3.0,
+      "sector_label": ""
+    },
+    "TNA": {
+      "category": "Trading--Leveraged Equity",
+      "count": 20,
+      "date": "Jun 16, 2026",
+      "holdings": [],
+      "mult": 3.0,
+      "sector_label": ""
+    },
     "TQQQ": {
       "category": "Trading--Leveraged Equity",
       "count": 126,
@@ -12217,6 +12391,22 @@
         }
       ],
       "mult": 3.0,
+      "sector_label": ""
+    },
+    "TWM": {
+      "category": "Trading--Inverse Equity",
+      "count": 10,
+      "date": "Jun 17, 2026",
+      "holdings": [],
+      "mult": -2.0,
+      "sector_label": ""
+    },
+    "TZA": {
+      "category": "Trading--Inverse Equity",
+      "count": 13,
+      "date": "Jun 17, 2026",
+      "holdings": [],
+      "mult": -3.0,
       "sector_label": ""
     },
     "UDOW": {
@@ -12866,92 +13056,92 @@
     "UWM": {
       "category": "Trading--Leveraged Equity",
       "count": 1915,
-      "date": "Jun 17, 2026",
+      "date": "Jun 18, 2026",
       "holdings": [
         {
           "name": "Bloom Energy Corporation",
           "ticker": "BE",
-          "weight": 0.83
+          "weight": 1.03
         },
         {
           "name": "Credo Technology Group Holding Ltd",
           "ticker": "CRDO",
-          "weight": 0.53
+          "weight": 0.63
         },
         {
           "name": "Sterling Infrastructure, Inc.",
           "ticker": "STRL",
-          "weight": 0.33
-        },
-        {
-          "name": "Fabrinet",
-          "ticker": "FN",
-          "weight": 0.28
+          "weight": 0.37
         },
         {
           "name": "TTM Technologies, Inc.",
           "ticker": "TTMI",
-          "weight": 0.28
+          "weight": 0.32
+        },
+        {
+          "name": "Fabrinet",
+          "ticker": "FN",
+          "weight": 0.3
         },
         {
           "name": "IonQ, Inc.",
           "ticker": "IONQ",
-          "weight": 0.25
+          "weight": 0.28
         },
         {
           "name": "Nextpower Inc.",
           "ticker": "NXT",
-          "weight": 0.24
+          "weight": 0.26
         },
         {
           "name": "Coeur Mining, Inc.",
           "ticker": "CDE",
+          "weight": 0.26
+        },
+        {
+          "name": "SiTime Corporation",
+          "ticker": "SITM",
           "weight": 0.24
         },
         {
           "name": "Guardant Health, Inc.",
           "ticker": "GH",
-          "weight": 0.21
-        },
-        {
-          "name": "SiTime Corporation",
-          "ticker": "SITM",
-          "weight": 0.2
-        },
-        {
-          "name": "EchoStar Corporation",
-          "ticker": "SATS",
-          "weight": 0.2
+          "weight": 0.23
         },
         {
           "name": "Modine Manufacturing Company",
           "ticker": "MOD",
-          "weight": 0.2
+          "weight": 0.22
         },
         {
           "name": "Rambus Inc.",
           "ticker": "RMBS",
-          "weight": 0.19
+          "weight": 0.22
+        },
+        {
+          "name": "EchoStar Corporation",
+          "ticker": "SATS",
+          "weight": 0.21
         },
         {
           "name": "Semtech Corporation",
           "ticker": "SMTC",
+          "weight": 0.21
+        },
+        {
+          "name": "Advanced Energy Industries, Inc.",
+          "ticker": "AEIS",
+          "weight": 0.2
+        },
+        {
+          "name": "Dycom Industries, Inc.",
+          "ticker": "DY",
           "weight": 0.19
         },
         {
           "name": "DigitalOcean Holdings, Inc.",
           "ticker": "DOCN",
-          "weight": 0.18
-        },
-        {
-          "name": "Dycom Industries, Inc.",
-          "ticker": "DY",
-          "weight": 0.18
-        },
-        {
-          "name": "Advanced Energy Industries, Inc.",
-          "ticker": "AEIS",
-          "weight": 0.18
+          "weight": 0.19
         }
       ],
       "mult": 2.0,
@@ -17148,117 +17338,107 @@
         {
           "name": "Exxon Mobil Corporation",
           "ticker": "XOM",
-          "weight": 22.12
+          "weight": 22.0
         },
         {
           "name": "Chevron Corporation",
           "ticker": "CVX",
-          "weight": 16.68
+          "weight": 16.59
         },
         {
           "name": "ConocoPhillips",
           "ticker": "COP",
-          "weight": 6.83
+          "weight": 6.79
         },
         {
           "name": "SLB N.V.",
           "ticker": "SLB",
-          "weight": 4.47
+          "weight": 4.45
         },
         {
           "name": "The Williams Companies, Inc.",
           "ticker": "WMB",
-          "weight": 4.46
+          "weight": 4.44
         },
         {
           "name": "Valero Energy Corporation",
           "ticker": "VLO",
-          "weight": 4.34
+          "weight": 4.32
         },
         {
           "name": "EOG Resources, Inc.",
           "ticker": "EOG",
-          "weight": 4.3
+          "weight": 4.27
         },
         {
           "name": "Marathon Petroleum Corporation",
           "ticker": "MPC",
-          "weight": 4.29
+          "weight": 4.26
         },
         {
           "name": "Phillips 66",
           "ticker": "PSX",
-          "weight": 4.0
+          "weight": 3.98
         },
         {
           "name": "Kinder Morgan, Inc.",
           "ticker": "KMI",
-          "weight": 3.64
+          "weight": 3.62
         },
         {
           "name": "Baker Hughes Company",
           "ticker": "BKR",
-          "weight": 3.53
+          "weight": 3.51
         },
         {
           "name": "Targa Resources Corp.",
           "ticker": "TRGP",
-          "weight": 3.33
+          "weight": 3.31
         },
         {
           "name": "ONEOK, Inc.",
           "ticker": "OKE",
-          "weight": 3.2
+          "weight": 3.18
         },
         {
           "name": "Devon Energy Corporation",
           "ticker": "DVN",
-          "weight": 2.91
+          "weight": 2.9
         },
         {
           "name": "Occidental Petroleum Corporation",
           "ticker": "OXY",
-          "weight": 2.27
+          "weight": 2.25
         },
         {
           "name": "Diamondback Energy, Inc.",
           "ticker": "FANG",
-          "weight": 2.14
+          "weight": 2.13
         },
         {
           "name": "EQT Corporation",
           "ticker": "EQT",
-          "weight": 1.9
+          "weight": 1.89
         },
         {
           "name": "Halliburton Company",
           "ticker": "HAL",
-          "weight": 1.8
+          "weight": 1.79
         },
         {
           "name": "Expand Energy Corporation",
           "ticker": "EXE",
-          "weight": 1.24
+          "weight": 1.23
         },
         {
           "name": "Texas Pacific Land Corporation",
           "ticker": "TPL",
-          "weight": 1.22
+          "weight": 1.21
         },
         {
           "name": "APA Corporation",
           "ticker": "APA",
           "weight": 0.71
-        },
-        {
-          "name": "SSI US GOV MONEY MARKET CLASS",
-          "ticker": "-",
-          "weight": 0.47
-        },
-        {
-          "name": "XAE ENERGY        SEP26",
-          "ticker": "IXPU6",
-          "weight": -0.03
         }
       ],
       "mult": null,
@@ -17808,7 +17988,7 @@
         {
           "name": "Welltower Inc.",
           "ticker": "WELL",
-          "weight": 9.93
+          "weight": 9.92
         },
         {
           "name": "Prologis, Inc.",
@@ -17818,7 +17998,7 @@
         {
           "name": "Equinix, Inc.",
           "ticker": "EQIX",
-          "weight": 7.37
+          "weight": 7.36
         },
         {
           "name": "American Tower Corporation",
@@ -17828,12 +18008,12 @@
         {
           "name": "Simon Property Group, Inc.",
           "ticker": "SPG",
-          "weight": 4.8
+          "weight": 4.79
         },
         {
           "name": "Public Storage",
           "ticker": "PSA",
-          "weight": 4.52
+          "weight": 4.51
         },
         {
           "name": "Digital Realty Trust, Inc.",
@@ -17843,12 +18023,12 @@
         {
           "name": "Ventas, Inc.",
           "ticker": "VTR",
-          "weight": 4.13
+          "weight": 4.12
         },
         {
           "name": "Realty Income Corporation",
           "ticker": "O",
-          "weight": 4.06
+          "weight": 4.05
         },
         {
           "name": "CBRE Group, Inc.",
@@ -17873,7 +18053,7 @@
         {
           "name": "VICI Properties Inc.",
           "ticker": "VICI",
-          "weight": 3.09
+          "weight": 3.14
         },
         {
           "name": "AvalonBay Communities, Inc.",
@@ -17923,7 +18103,7 @@
         {
           "name": "Healthpeak Properties, Inc.",
           "ticker": "DOC",
-          "weight": 1.43
+          "weight": 1.42
         },
         {
           "name": "CoStar Group, Inc.",
@@ -18210,17 +18390,17 @@
         {
           "name": "Amazon.com, Inc.",
           "ticker": "AMZN",
-          "weight": 25.34
+          "weight": 25.32
         },
         {
           "name": "Tesla, Inc.",
           "ticker": "TSLA",
-          "weight": 19.1
+          "weight": 19.08
         },
         {
           "name": "The Home Depot, Inc.",
           "ticker": "HD",
-          "weight": 5.59
+          "weight": 5.58
         },
         {
           "name": "The TJX Companies, Inc.",
@@ -18240,7 +18420,7 @@
         {
           "name": "Lowe's Companies, Inc.",
           "ticker": "LOW",
-          "weight": 2.87
+          "weight": 2.86
         },
         {
           "name": "Starbucks Corporation",
@@ -18280,7 +18460,7 @@
         {
           "name": "DoorDash, Inc.",
           "ticker": "DASH",
-          "weight": 1.46
+          "weight": 1.45
         },
         {
           "name": "Airbnb, Inc.",
@@ -18290,7 +18470,7 @@
         {
           "name": "Ford Motor Company",
           "ticker": "F",
-          "weight": 1.29
+          "weight": 1.28
         },
         {
           "name": "NIKE, Inc.",
@@ -18315,17 +18495,17 @@
         {
           "name": "Yum! Brands, Inc.",
           "ticker": "YUM",
-          "weight": 1.01
+          "weight": 1.0
         },
         {
           "name": "Chipotle Mexican Grill, Inc.",
           "ticker": "CMG",
-          "weight": 0.98
+          "weight": 0.97
         },
         {
           "name": "D.R. Horton, Inc.",
           "ticker": "DHI",
-          "weight": 0.97
+          "weight": 0.96
         },
         {
           "name": "Carnival Corporation Ltd.",
@@ -18478,22 +18658,22 @@
         {
           "name": "HF Sinclair Corporation",
           "ticker": "DINO",
-          "weight": 3.28
+          "weight": 3.27
         },
         {
           "name": "SM Energy Company",
           "ticker": "SM",
-          "weight": 3.08
+          "weight": 3.07
         },
         {
           "name": "Marathon Petroleum Corporation",
           "ticker": "MPC",
-          "weight": 3.03
+          "weight": 3.02
         },
         {
           "name": "Diamondback Energy, Inc.",
           "ticker": "FANG",
-          "weight": 2.95
+          "weight": 2.94
         },
         {
           "name": "Valero Energy Corporation",
@@ -18503,17 +18683,17 @@
         {
           "name": "Murphy Oil Corporation",
           "ticker": "MUR",
-          "weight": 2.91
+          "weight": 2.9
         },
         {
           "name": "APA Corporation",
           "ticker": "APA",
-          "weight": 2.89
+          "weight": 2.88
         },
         {
           "name": "Chord Energy Corporation",
           "ticker": "CHRD",
-          "weight": 2.86
+          "weight": 2.85
         },
         {
           "name": "EOG Resources, Inc.",
@@ -18523,12 +18703,12 @@
         {
           "name": "Viper Energy, Inc.",
           "ticker": "VNOM",
-          "weight": 2.78
+          "weight": 2.77
         },
         {
           "name": "Phillips 66",
           "ticker": "PSX",
-          "weight": 2.77
+          "weight": 2.76
         },
         {
           "name": "Ovintiv Inc.",
@@ -18543,27 +18723,27 @@
         {
           "name": "Occidental Petroleum Corporation",
           "ticker": "OXY",
-          "weight": 2.68
+          "weight": 2.67
         },
         {
           "name": "ConocoPhillips",
           "ticker": "COP",
-          "weight": 2.67
+          "weight": 2.66
         },
         {
           "name": "Devon Energy Corporation",
           "ticker": "DVN",
-          "weight": 2.64
+          "weight": 2.63
         },
         {
           "name": "Exxon Mobil Corporation",
           "ticker": "XOM",
-          "weight": 2.61
+          "weight": 2.6
         },
         {
           "name": "Chevron Corporation",
           "ticker": "CVX",
-          "weight": 2.6
+          "weight": 2.59
         },
         {
           "name": "Magnolia Oil & Gas Corporation",
@@ -18573,22 +18753,22 @@
         {
           "name": "PBF Energy Inc.",
           "ticker": "PBF",
-          "weight": 2.53
+          "weight": 2.52
         },
         {
           "name": "Matador Resources Company",
           "ticker": "MTDR",
-          "weight": 2.52
+          "weight": 2.51
         },
         {
           "name": "Crescent Energy Company",
           "ticker": "CRGY",
-          "weight": 2.5
+          "weight": 2.49
         },
         {
           "name": "Venture Global, Inc.",
           "ticker": "VG",
-          "weight": 2.49
+          "weight": 2.48
         },
         {
           "name": "Range Resources Corporation",
@@ -18598,7 +18778,7 @@
         {
           "name": "Antero Resources Corporation",
           "ticker": "AR",
-          "weight": 2.4
+          "weight": 2.39
         }
       ],
       "mult": null,
@@ -18737,9 +18917,25 @@
       ],
       "mult": null,
       "sector_label": "Consumer"
+    },
+    "YANG": {
+      "category": "Trading--Inverse Equity",
+      "count": 12,
+      "date": "Jun 16, 2026",
+      "holdings": [],
+      "mult": -3.0,
+      "sector_label": ""
+    },
+    "YINN": {
+      "category": "Trading--Leveraged Equity",
+      "count": 14,
+      "date": "Jun 16, 2026",
+      "holdings": [],
+      "mult": 3.0,
+      "sector_label": ""
     }
   },
-  "refreshed_at": "2026-06-19T15:58:10+00:00",
+  "refreshed_at": "2026-06-19T17:15:51+00:00",
   "schema_version": 1,
   "source": "stockanalysis.com"
 }

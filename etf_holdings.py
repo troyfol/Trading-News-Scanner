@@ -325,11 +325,6 @@ class EtfHoldings:
                     "name": str(h.get("name") or "").strip(),
                     "weight": w,
                 })
-            # A "multi-holding" ETF must hold >1 distinct security; a
-            # 0/1-holding result is a swap-only or mis-scraped fund and is
-            # dropped so it never pollutes the reverse map.
-            if len(holdings) < 2:
-                continue
             mult = prof.get("mult")
             try:
                 mult = float(mult) if mult is not None else None
@@ -338,6 +333,17 @@ class EtfHoldings:
             if mult is not None and (mult != mult or mult == 0
                                      or abs(mult) > 5.0):
                 mult = None
+            # A "multi-holding" ETF normally holds >1 distinct security. A
+            # 0/1-holding result is usually a swap-only fund (leveraged /
+            # inverse funds hold total-return swaps, which the source
+            # reports without share tickers) or a mis-scrape. KEEP it only
+            # when it's a known leveraged fund (mult set) so the ETF-self
+            # indicator can still show a blue "ETF: <mult>X" badge — the
+            # empty holdings list means it contributes nothing to the
+            # reverse map. Non-leveraged funds with <2 holdings are dropped
+            # as mis-scrapes (a real basket fund always lists its shares).
+            if len(holdings) < 2 and mult is None:
+                continue
             try:
                 count = int(prof.get("count") or len(holdings))
             except (TypeError, ValueError):
@@ -358,6 +364,12 @@ class EtfHoldings:
         # Build the reverse index by inverting every profile's holdings.
         holders: dict[str, list[dict]] = {}
         for etf, prof in self._profiles.items():
+            # Inverse funds SHORT their basket — a stock they reference is
+            # not "held". Keep them out of the reverse (stock -> ETFs) map
+            # so "Held: N" only ever means LONG exposure. They still get a
+            # self-view profile + blue badge above.
+            if (prof.get("mult") or 0) < 0:
+                continue
             for h in prof.get("holdings", []):
                 holders.setdefault(h["ticker"], []).append({
                     "etf": etf,

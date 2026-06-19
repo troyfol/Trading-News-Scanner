@@ -738,6 +738,90 @@ def test_etf_holdings_map_and_indicator():
         shutil.rmtree(td, ignore_errors=True)
 
 
+def test_etf_swap_resolution_and_badge():
+    """Swap-based ETFs (SPCL and the leveraged/inverse families): the
+    swap-description parser, the SEC name->ticker resolver, the
+    leverage-only 'badge' fallback for <2-holding funds, and the exclusion
+    of inverse funds from the reverse 'Held' map."""
+    _hr("ETF swap resolution + badge fallback")
+    import etf_scraper as S
+    import etf_holdings as EH
+    import scan_sec as mod
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    # Swap-description -> company name (cash / accounting rows -> None).
+    assert S._extract_swap_company("ROCKET LAB CORPORATION-SWAP-MREX-L") == \
+        "ROCKET LAB CORPORATION"
+    assert S._extract_swap_company("AST SPACEMOBILE INC.-SWAP-SWAP-MREX-L") == \
+        "AST SPACEMOBILE INC"
+    for junk in ("US DOLLARS", "OTHER ASSETS AND LIABILITIES", "Cash Offset", ""):
+        assert S._extract_swap_company(junk) is None, junk
+
+    # Name -> ticker resolver, fed synthetic SEC data (no network).
+    res = mod.CIKResolver()
+    res.close()  # stop the live refresh thread before overriding the maps
+    res.process_data({
+        "0": {"cik_str": 1, "ticker": "RKLB", "title": "Rocket Lab Corp"},
+        "1": {"cik_str": 2, "ticker": "SATS", "title": "EchoStar Corp"},
+        "2": {"cik_str": 3, "ticker": "ASTS", "title": "AST SpaceMobile, Inc."},
+    })
+    assert res.resolve_name_to_ticker("ROCKET LAB CORPORATION") == "RKLB"
+    assert res.resolve_name_to_ticker("ECHOSTAR CORPORATION") == "SATS"
+    assert res.resolve_name_to_ticker("AST SPACEMOBILE INC.") == "ASTS"
+    assert res.resolve_name_to_ticker("WHOLLY UNRELATED HOLDINGS XYZ") is None
+
+    # Badge fallback + inverse exclusion in the holdings map.
+    td = Path(tempfile.mkdtemp())
+    try:
+        eh = EH.EtfHoldings(path=td / "etf_holdings.json")
+        eh.replace({
+            # Leveraged long fund, 0 holdings -> kept as a blue badge.
+            "SPCL": {"mult": 2.0, "category": "", "sector_label": "",
+                     "count": 9, "date": "x", "holdings": []},
+            # Inverse fund WITH holdings -> profile kept, but excluded from reverse.
+            "SOXS": {"mult": -3.0, "category": "", "sector_label": "",
+                     "count": 2, "date": "x",
+                     "holdings": [{"ticker": "NVDA", "name": "NVIDIA", "weight": 5.0},
+                                  {"ticker": "AVGO", "name": "Broadcom", "weight": 4.0}]},
+            # Non-leveraged with <2 holdings -> dropped (mis-scrape).
+            "BADX": {"mult": None, "category": "x",
+                     "holdings": [{"ticker": "ONLY", "weight": 1.0}]},
+        }, source="test", errors=[])
+        assert eh.is_etf("SPCL"), "leveraged 0-holding fund must keep a badge profile"
+        assert mod.ScannerApp._etf_self_text(eh.get_profile("SPCL")) == "ETF: 2X"
+        assert eh.is_etf("SOXS")
+        assert not eh.is_etf("BADX"), "non-leveraged <2-holding fund must drop"
+        # Inverse SOXS must NOT appear as a holder of NVDA.
+        assert "SOXS" not in [r["etf"] for r in eh.get_holders_for("NVDA")]
+        print("ETF swap resolution + badge OK")
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+
+
+def test_float_coloration_settings():
+    """parse_float honors the settings-tunable cutoff, and the float
+    color overrides default to '' (= follow theme green/red)."""
+    _hr("float coloration cutoff + colors")
+    app = _make_app()
+    try:
+        f = app.fetcher
+        f.float_low_threshold = 5_000_000
+        assert f.parse_float("3M")[1] is True
+        assert f.parse_float("8M")[1] is False
+        f.float_low_threshold = 20_000_000
+        assert f.parse_float("15M")[1] is True
+        assert f.parse_float("25M")[1] is False
+        # Colors default to "" (follow theme); attrs exist.
+        assert app.float_low_color == "" and app.float_high_color == ""
+        # A non-numeric float string must not raise.
+        assert f.parse_float("N/A")[1] is False
+        print("float coloration OK")
+    finally:
+        _teardown(app)
+
+
 def test_cik_resolver_close_joins_refresh_thread():
     """CIKResolver.close() must wait briefly for the SEC ticker
     refresh thread before closing the session — otherwise the session
@@ -1018,6 +1102,8 @@ def main():
     test_status_loop_paints_stall_indicator()
     test_etf_map_fallback_warning_fires()
     test_etf_holdings_map_and_indicator()
+    test_etf_swap_resolution_and_badge()
+    test_float_coloration_settings()
     test_finviz_ea_synthesizer()
     test_eps_sales_surpr_cell_parser()
     test_finviz_ea_yoy_small_base_floor()

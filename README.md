@@ -24,13 +24,13 @@ The window watcher runs on a dedicated daemon thread with a stall watchdog, so a
   - **Recency indicator** — color-coded by whether the company filed anything in the last 24 h (hot), 48 h (warm), or longer (cold). Click to open EDGAR.
   - **Shelf registration** — flags active S-3 filings. Click to view on EDGAR.
 - **CIK resolution** — maps tickers to SEC CIK numbers via the official `sec.gov/files/company_tickers.json` endpoint with fuzzy name-matching fallback; cached locally.
-- **Float & short data** — shares float (highlighted when low) and short-float percentage from Finviz.
+- **Float & short data** — shares float (colored by a low-float cutoff) and short-float percentage from Finviz. The cutoff and the low/high colors are tunable in **Settings → Float**.
 - **Earnings row** — earnings date, EPS surprise, sales surprise, and EPS / revenue YoY on a dedicated togglable row, color-coded by proximity, with a future-date suppression safeguard.
 - **Earnings chart** — double-click any earnings label to open a per-quarter chart (YoY % and Surprise % bars on outlier-robust axes, click-to-highlight a quarter, live color editor). Reads an optional earnings-history parquet you supply (see [Optional earnings data](#optional-earnings-data)).
 - **Historical Lookup** — surfaces news and SEC EDGAR filings around any date for the active symbol, with async one-line summaries for filing rows. News enrichment can optionally use Polygon (see [API keys](#api-keys--privacy)).
 - **ETF coverage** — two indicators driven by JSON maps you can refresh from Settings:
   - **Single-stock ETF** — flags any active symbol covered by a leveraged / inverse single-stock ETF (and, when the symbol *is* one, what it tracks).
-  - **Multi-holding ETFs** — a second **Held: N** indicator counts the sector / index / thematic / leveraged-index ETFs that hold the active stock as a top holding (click for the list). When the active symbol *is* one of those ETFs, the indicator turns blue with a high-confidence sector/strategy + leverage label (e.g. `ETF: Tech`, `ETF: 3X`), and hovering lists its current constituents. Holdings are sourced from [stockanalysis.com](https://stockanalysis.com).
+  - **Multi-holding ETFs** — a second **Held: N** indicator counts the sector / index / thematic / leveraged-index ETFs that hold the active stock as a top holding (click for the list). When the active symbol *is* one of those ETFs, the indicator turns blue with a high-confidence sector/strategy + leverage label (e.g. `ETF: Tech`, `ETF: 3X`), and hovering lists its current constituents. Holdings are sourced from [stockanalysis.com](https://stockanalysis.com); swap-based leveraged/inverse funds have their constituents recovered from the swap descriptions (via SEC name→ticker matching), falling back to a leverage-only badge when they can't be resolved.
 - **Quality-of-life** — keyword highlighting, time filters (Today / 48 h / All), live per-source status dots, clickable headlines, dark / light theme, adjustable font size, always-on-top, and persistent settings.
 
 ## Requirements

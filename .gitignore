@@ -18,6 +18,8 @@ scanner_settings.json
 wires_cache.json
 sec_tickers.json
 *.parquet
+# Backup artifacts written next to the ETF JSON maps on every refresh
+*.bak
 
 # Internal development docs & legacy code (kept locally, not published)
 AUDIT_*.md

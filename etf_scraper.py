@@ -906,11 +906,46 @@ CURATED_ETF_UNIVERSE: dict[str, "float | None"] = {
     "ERX": 2.0, "ERY": -2.0, "GUSH": 2.0, "DRIP": -2.0,
     "YINN": 3.0, "YANG": -3.0, "CWEB": 2.0,
     "NUGT": 2.0, "DUST": -2.0, "JNUG": 2.0, "JDST": -2.0,
+    # --- Defiance 2x single-theme (swap-based; holdings resolved from
+    #     swap descriptions, else shown as a leverage-only badge) ---
+    "SPCL": 2.0,  # Defiance Daily Target 2X Long SPACE ETF
 }
+
+
+# Non-equity holding rows (cash / accounting lines) we never try to
+# resolve to a ticker.
+_SWAP_SKIP_TOKENS = (
+    "DOLLAR", "CASH", "OTHER ASSET", "NET OTHER", "OFFSET", "LIABILIT",
+    "RECEIVABLE", "PAYABLE", "MARGIN", "COLLATERAL", "TREASURY BILL",
+    "REPO", "MONEY MARKET", "DEPOSIT", "ACCRUED",
+)
+
+
+def _extract_swap_company(name: str) -> "str | None":
+    """Pull the underlying company name out of a swap / total-return-swap
+    holding description so it can be resolved to a ticker.
+
+    ``"ROCKET LAB CORPORATION-SWAP-MREX-L"`` -> ``"ROCKET LAB CORPORATION"``;
+    ``"AST SPACEMOBILE INC.-SWAP-SWAP-MREX-L"`` -> ``"AST SPACEMOBILE INC."``.
+    Returns None for cash / accounting rows (no resolvable equity).
+    """
+    if not name:
+        return None
+    up = name.upper()
+    if any(tok in up for tok in _SWAP_SKIP_TOKENS):
+        return None
+    # Cut at the first SWAP marker ("-SWAP", " SWAP", "_SWAP").
+    company = re.split(r"[-\s_]SWAP", name, maxsplit=1, flags=re.IGNORECASE)[0]
+    company = company.strip(" -_.")
+    # Need a couple of real letters to be a plausible company name.
+    if len(re.sub(r"[^A-Za-z]", "", company)) < 3:
+        return None
+    return company
 
 
 def fetch_stockanalysis_holdings(
     session: requests.Session, symbol: str, top_n: int = _HOLDINGS_TOP_N,
+    name_resolver=None,
 ) -> "dict | None":
     """Fetch one ETF's holdings profile from stockanalysis.com.
 
@@ -948,18 +983,39 @@ def fetch_stockanalysis_holdings(
     if not isinstance(raw_holdings, list):
         return None
     holdings: list[dict] = []
+    seen: set = set()
     for h in raw_holdings:
         if not isinstance(h, dict):
             continue
+        nm = str(h.get("n") or "").strip()
         tk = str(h.get("s") or "").lstrip("$").upper().strip()
         if not tk:
+            # No share ticker — this is a swap / cash row. Leveraged &
+            # inverse funds hold total-return SWAPS reported by name only
+            # (e.g. "ROCKET LAB CORPORATION-SWAP-..."). If the caller gave
+            # us a name->ticker resolver, recover the real symbol from the
+            # swap description so these funds still get constituents.
+            if name_resolver is not None:
+                company = _extract_swap_company(nm)
+                if company:
+                    try:
+                        resolved = name_resolver(company)
+                    except Exception:  # noqa: BLE001 — resolver must never break a fetch
+                        resolved = None
+                    if resolved:
+                        tk = str(resolved).upper().strip()
+                        if not nm:
+                            nm = company
+            if not tk:
+                continue
+        if tk in seen:
             continue
+        seen.add(tk)
         try:
             w = float(str(h.get("as") or "0").replace("%", "").strip())
         except (TypeError, ValueError):
             w = 0.0
-        holdings.append({"ticker": tk, "name": str(h.get("n") or "").strip(),
-                         "weight": w})
+        holdings.append({"ticker": tk, "name": nm, "weight": w})
         if len(holdings) >= top_n:
             break
     info = data.get("infoTable") if isinstance(data.get("infoTable"), dict) else {}
@@ -984,13 +1040,17 @@ def scrape_etf_holdings(
     universe: "dict | None" = None,
     pace: float = _HOLDINGS_PACE_SEC,
     max_etfs: "int | None" = None,
+    name_resolver=None,
 ) -> "tuple[dict, list[str]]":
     """Fetch holdings for the curated multi-holding ETF universe.
 
     Per-ETF failures are isolated and the prior profile (from
     ``existing_profiles``) is preserved, so a transient 404 / rate-limit on
-    one fund never wipes the rest. Returns ``(profiles, errors)`` shaped for
-    ``EtfHoldings.replace``.
+    one fund never wipes the rest. ``name_resolver`` (a ``name -> ticker``
+    callable, e.g. ``CIKResolver.resolve_name_to_ticker``) is used to turn
+    swap-based funds' holding descriptions into real symbols; when None,
+    such funds fall back to a leverage-only badge. Returns
+    ``(profiles, errors)`` shaped for ``EtfHoldings.replace``.
     """
     universe = universe if universe is not None else CURATED_ETF_UNIVERSE
     existing_profiles = existing_profiles or {}
@@ -1014,7 +1074,8 @@ def scrape_etf_holdings(
         etf = etf.upper().strip()
         mult = universe.get(etf)
         try:
-            prof = fetch_stockanalysis_holdings(session, etf)
+            prof = fetch_stockanalysis_holdings(session, etf,
+                                                name_resolver=name_resolver)
         except requests.RequestException as exc:
             prof = None
             errors.append(f"{etf}: network error: {exc}")
@@ -1029,13 +1090,25 @@ def scrape_etf_holdings(
                 _log(progress_cb, f"  [{i}/{n}] {etf}: {len(prof['holdings'])} "
                                   f"holdings{' ('+str(mult)+'x)' if mult else ''}")
         else:
-            # Preserve a prior good profile for this ETF on failure.
+            # <2 holdings (swap-only fund or transient bad fetch). Prefer a
+            # prior good profile so we never regress real constituents...
             prior = existing_profiles.get(etf)
             if isinstance(prior, dict) and prior.get("holdings"):
                 prior = dict(prior)
                 prior["mult"] = mult
                 profiles[etf] = prior
                 _log(progress_cb, f"  [{i}/{n}] {etf}: fetch failed — preserving prior")
+            elif mult is not None:
+                # ...else, for a KNOWN leveraged fund (e.g. swap-based 2x/3x
+                # thematic or inverse), keep a holdings-less "badge" profile
+                # so the ETF-self indicator still shows blue "ETF: <mult>X".
+                # Carry any category/date the fetch did return.
+                badge = dict(prof) if isinstance(prof, dict) else {}
+                badge["mult"] = mult
+                badge["holdings"] = []
+                profiles[etf] = badge
+                _log(progress_cb, f"  [{i}/{n}] {etf}: no holdings (swap-based) — "
+                                  f"badge only ({mult}x)")
             else:
                 _log(progress_cb, f"  [{i}/{n}] {etf}: no data")
         if pace and i < n:

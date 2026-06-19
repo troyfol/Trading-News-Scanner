@@ -223,6 +223,14 @@ MIN_SCRAPE_INTERVAL = 1.0  # default; user-tunable via Settings dialog
 MIN_SCRAPE_INTERVAL_RANGE = (0.1, 10.0)
 MIN_SEC_INTERVAL = 0.15  # SEC fair-access: 10 req/s cap; stay well under
 
+# Float coloration: shares-float below this many shares renders in the
+# "low" color (a small float is the trade-relevant signal), else the
+# "high" color. Both the cutoff and the two colors are user-tunable via
+# the Settings dialog. The colors default to "" meaning "follow the
+# theme's green/red", so the out-of-the-box look is unchanged.
+LOW_FLOAT_DEFAULT = 20_000_000
+LOW_FLOAT_RANGE_M = (0.1, 100_000.0)  # cutoff entered in MILLIONS of shares
+
 # Default location of the earnings-history parquet produced by an
 # upstream earnings pipeline. It carries `yoy_eps_pct` + `yoy_rev_pct`
 # columns the Historical Lookup uses for 10-Q YoY enrichment. The file
@@ -306,6 +314,11 @@ class CIKResolver:
         self.ticker_map = {}
         self.name_map = {}
         self._prefix_map = {}
+        # Reverse name->ticker index (for resolving ETF swap descriptions
+        # like "ROCKET LAB CORPORATION-SWAP-..." back to RKLB). Separate
+        # from the CIK structures above so that path is untouched.
+        self._name_ticker_map = {}
+        self._nt_prefix = {}
         self.loaded = False
         self._lock = threading.Lock()
         # Dedicated session for the SEC ticker manifest pull. Owned by
@@ -373,6 +386,8 @@ class CIKResolver:
         t_map = {}
         n_map = {}
         prefix_map = {}  # first char -> list of (norm_name, cik)
+        nt_map = {}      # norm_name -> ticker  (reverse, for swap resolution)
+        nt_prefix = {}   # first char -> list of (norm_name, ticker)
         if not isinstance(raw_json, dict):
             # A tampered/garbage manifest that still parses as JSON but
             # isn't the expected ``{idx: {cik_str, ticker, title}}`` shape
@@ -396,11 +411,40 @@ class CIKResolver:
                 if ch not in prefix_map:
                     prefix_map[ch] = []
                 prefix_map[ch].append((norm_title, cik))
+                # Reverse index (name -> ticker). Skip blank tickers so a
+                # company with no listed symbol can't shadow a real one.
+                if tick:
+                    nt_map.setdefault(norm_title, tick)
+                    nt_prefix.setdefault(ch, []).append((norm_title, tick))
         with self._lock:
             self.ticker_map = t_map
             self.name_map = n_map
             self._prefix_map = prefix_map
+            self._name_ticker_map = nt_map
+            self._nt_prefix = nt_prefix
             self.loaded = True
+
+    def resolve_name_to_ticker(self, name, min_ratio=0.90):
+        """Best-effort company-name -> ticker via the SEC manifest. Used to
+        turn an ETF swap description ("ROCKET LAB CORPORATION-SWAP-...")
+        into a real symbol (RKLB). Exact normalized-title match first, then
+        a conservative fuzzy match within the same first-letter bucket;
+        returns None when nothing clears ``min_ratio`` (we'd rather omit a
+        holding than mis-resolve it)."""
+        norm = self.normalize_name(name)
+        if not norm:
+            return None
+        with self._lock:
+            exact = self._name_ticker_map.get(norm)
+            if exact:
+                return exact
+            candidates = list(self._nt_prefix.get(norm[0], []))
+        best, best_r = None, 0.0
+        for cand_norm, tick in candidates:
+            r = self._ratio(norm, cand_norm)
+            if r > best_r:
+                best_r, best = r, tick
+        return best if best_r >= min_ratio else None
 
     @staticmethod
     def _ratio(a, b):
@@ -905,6 +949,9 @@ class DataFetcher:
         # module constant but can be overridden at runtime via the
         # Settings dialog.
         self.finviz_min_interval = MIN_SCRAPE_INTERVAL
+        # Low-float cutoff (shares). Settings-tunable; drives parse_float's
+        # is_low flag and therefore the float label's color.
+        self.float_low_threshold = LOW_FLOAT_DEFAULT
         # Per-session cache for the finviz ty=ea earnings page (sym ->
         # list of canonical rows with YoY, or [] on miss). Avoids a
         # repeat scrape when the same symbol's chart is reopened or the
@@ -986,7 +1033,7 @@ class DataFetcher:
             elif clean.endswith("B"): val = float(clean[:-1]) * 1_000_000_000
             elif clean.endswith("K"): val = float(clean[:-1]) * 1_000
             else: val = float(clean)
-            return text, (val < 20_000_000)
+            return text, (val < self.float_low_threshold)
         except (ValueError, TypeError):
             return text, False
 
@@ -3214,6 +3261,11 @@ class ScannerApp(tk.Tk):
         self.var_rvol.set(self._pending_show_rvol)
         # Push loaded Finviz throttle into the live fetcher.
         self.fetcher.finviz_min_interval = self._pending_finviz_min_interval
+        # Float coloration — cutoff lives on the fetcher (used by
+        # parse_float); the two colors live on the app (used at render).
+        self.fetcher.float_low_threshold = self._pending_float_low_threshold
+        self.float_low_color = self._pending_float_low_color
+        self.float_high_color = self._pending_float_high_color
         # Earnings live attrs — read by refresh_meta_label.
         self.earn_past_days = self._pending_earn_past_days
         self.earn_future_days = self._pending_earn_future_days
@@ -3623,8 +3675,53 @@ class ScannerApp(tk.Tk):
             font=small, bg=c["BG"], fg=c["CREDIT"],
         ).grid(row=22, column=0, columnspan=4, sticky="w", padx=(12, 0))
 
+        # ----- Float coloration -----
+        tk.Label(wrap, text="Float", font=std_bold, **lbl_conf).grid(
+            row=23, column=0, sticky="w", pady=(12, 4),
+        )
+        tk.Label(wrap, text="Low-float cutoff (M shares)", font=std, **lbl_conf).grid(
+            row=24, column=0, sticky="w", padx=(12, 6),
+        )
+        var_float_cut = tk.StringVar(
+            value=f"{self.fetcher.float_low_threshold / 1_000_000:g}")
+        ent_float_cut = tk.Entry(wrap, textvariable=var_float_cut, width=8,
+                                 font=std, **ent_conf)
+        ent_float_cut.grid(row=24, column=1, sticky="w")
+        flo_m, fhi_m = LOW_FLOAT_RANGE_M
+        tk.Label(
+            wrap, text=f"  float below this (in millions) shows the low color "
+                       f"({flo_m:g}–{fhi_m:g})",
+            font=small, bg=c["BG"], fg=c["CREDIT"],
+        ).grid(row=24, column=2, columnspan=2, sticky="w")
+
+        def make_float_color_row(row, label_text, stored, theme_color, hint):
+            tk.Label(wrap, text=label_text, font=std, **lbl_conf).grid(
+                row=row, column=0, sticky="w", padx=(12, 6))
+            var = tk.StringVar(value=stored)  # "" (= follow theme) or #RRGGBB
+            ent = tk.Entry(wrap, textvariable=var, width=10, font=std, **ent_conf)
+            ent.grid(row=row, column=1, sticky="w")
+            swatch = tk.Label(wrap, text="    ", bg=theme_color, width=3)
+            swatch.grid(row=row, column=2, sticky="w", padx=(6, 6))
+            tk.Label(wrap, text=hint, font=small, bg=c["BG"], fg=c["CREDIT"]).grid(
+                row=row, column=3, sticky="w")
+
+            def upd(*_):
+                v = var.get().strip()
+                eff = v if self._is_valid_hex_color(v) else theme_color
+                try: swatch.config(bg=eff)
+                except tk.TclError: pass
+            var.trace_add("write", upd)
+            return var
+
+        var_float_low = make_float_color_row(
+            25, "Low color (#hex)", getattr(self, "float_low_color", "") or "",
+            c["TXT_OK"], "  blank = theme green")
+        var_float_high = make_float_color_row(
+            26, "High color (#hex)", getattr(self, "float_high_color", "") or "",
+            c["TXT_BAD"], "  blank = theme red")
+
         err_lbl = tk.Label(wrap, text="", bg=c["BG"], fg=c["TXT_BAD"], font=std)
-        err_lbl.grid(row=23, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        err_lbl.grid(row=27, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
         def save_and_close():
             # Validate SEC contact (blank is allowed = placeholder/env fallback)
@@ -3641,6 +3738,22 @@ class ScannerApp(tk.Tk):
             if not (rng_lo <= throttle_val <= rng_hi):
                 err_lbl.config(text=f"Finviz interval must be {rng_lo:g}–{rng_hi:g}")
                 return
+            # Validate float cutoff (entered in millions of shares) + colors.
+            try:
+                float_cut_m = float(var_float_cut.get().strip())
+            except ValueError:
+                err_lbl.config(text="Float cutoff must be a number (millions of shares)")
+                return
+            if not (flo_m <= float_cut_m <= fhi_m):
+                err_lbl.config(text=f"Float cutoff must be {flo_m:g}–{fhi_m:g} (M shares)")
+                return
+            float_low_val = var_float_low.get().strip()
+            float_high_val = var_float_high.get().strip()
+            for lbl_name, cval in (("Float low", float_low_val),
+                                   ("Float high", float_high_val)):
+                if cval and not self._is_valid_hex_color(cval):
+                    err_lbl.config(text=f"{lbl_name} color must be #RRGGBB (or blank)")
+                    return
             # Validate windows
             try:
                 past_d = int(var_past.get().strip())
@@ -3663,6 +3776,10 @@ class ScannerApp(tk.Tk):
                     return
             # Apply
             self.fetcher.finviz_min_interval = throttle_val
+            # Float coloration — cutoff (millions -> shares) + colors.
+            self.fetcher.float_low_threshold = float_cut_m * 1_000_000
+            self.float_low_color = float_low_val
+            self.float_high_color = float_high_val
             self.earn_past_days = past_d
             self.earn_future_days = future_d
             self.earn_future_color = color_future
@@ -3723,11 +3840,27 @@ class ScannerApp(tk.Tk):
             # immediately without waiting for the next refresh.
             try: self.refresh_meta_label()
             except Exception: pass
+            # Re-render the float label live with the new cutoff + colors
+            # (it's painted in scrape_sec_data, not refresh_meta_label, so
+            # recompute is_low for the current symbol here).
+            try:
+                m = self.current_meta or {}
+                if m.get("float"):
+                    _, is_low = self.fetcher.parse_float(m["float"])
+                    m["is_low"] = is_low
+                    col = ((self.float_low_color or self.colors["TXT_OK"]) if is_low
+                           else (self.float_high_color or self.colors["TXT_BAD"]))
+                    self.lbl_float.config(text=f"Float {m['float']}", fg=col)
+            except Exception:
+                pass
             # Persist the dialog's settings to disk NOW (not just in
             # on_close) so a later force-kill can't silently revert them
             # (#18). Best-effort merge so it never blocks the Save.
             self._merge_persist_settings({
                 "finviz_min_interval": float(self.fetcher.finviz_min_interval),
+                "float_low_threshold": float(self.fetcher.float_low_threshold),
+                "float_low_color": str(getattr(self, "float_low_color", "") or ""),
+                "float_high_color": str(getattr(self, "float_high_color", "") or ""),
                 "earn_past_days": int(self.earn_past_days),
                 "earn_future_days": int(self.earn_future_days),
                 "earn_future_color": str(self.earn_future_color),
@@ -3745,7 +3878,7 @@ class ScannerApp(tk.Tk):
             dlg.destroy()
 
         btn_row = tk.Frame(wrap, bg=c["BG"])
-        btn_row.grid(row=24, column=0, columnspan=4, sticky="e", pady=(12, 0))
+        btn_row.grid(row=28, column=0, columnspan=4, sticky="e", pady=(12, 0))
         tk.Button(btn_row, text="Cancel", command=dlg.destroy, font=std, **btn_conf).pack(
             side="right", padx=(6, 0),
         )
@@ -4243,7 +4376,12 @@ class ScannerApp(tk.Tk):
         self.current_meta = meta
 
         if meta.get("float"):
-            fg_col = self.colors["TXT_OK"] if meta['is_low'] else self.colors["TXT_BAD"]
+            # User-tunable float colors; "" falls back to the theme's
+            # green/red so the default look is unchanged.
+            if meta['is_low']:
+                fg_col = getattr(self, "float_low_color", "") or self.colors["TXT_OK"]
+            else:
+                fg_col = getattr(self, "float_high_color", "") or self.colors["TXT_BAD"]
             self.lbl_float.config(text=f"Float {meta['float']}", fg=fg_col)
         
         self.refresh_meta_label()
@@ -8637,8 +8775,17 @@ class ScannerApp(tk.Tk):
                         existing_profiles = self.etf_holdings.snapshot_profiles()
                 except Exception:  # noqa: BLE001
                     existing_profiles = {}
+                # Pass the SEC name->ticker resolver so swap-based funds
+                # (SPCL and the leveraged/inverse families) recover real
+                # constituents from their swap descriptions.
+                _resolver = None
+                try:
+                    _resolver = self.fetcher.cik_resolver.resolve_name_to_ticker
+                except AttributeError:
+                    _resolver = None
                 profiles, h_errors = scrape_etf_holdings(
                     progress_cb, existing_profiles=existing_profiles,
+                    name_resolver=_resolver,
                 )
                 if self.etf_holdings is None:
                     self.etf_holdings = EtfHoldings()
@@ -9027,6 +9174,12 @@ class ScannerApp(tk.Tk):
         self._pending_maximized = False
         self._pending_col_widths: dict = {}
         self._pending_finviz_min_interval: float = MIN_SCRAPE_INTERVAL
+        # Float coloration — cutoff (shares) + the two colors. Colors
+        # default to "" meaning "follow the theme's green/red", so the
+        # baseline look is unchanged for users who never open Settings.
+        self._pending_float_low_threshold: float = LOW_FLOAT_DEFAULT
+        self._pending_float_low_color: str = ""
+        self._pending_float_high_color: str = ""
         self._pending_search_visible: bool = False
         self._pending_search_kw: str = ""
         self._pending_search_date: str = ""
@@ -9128,6 +9281,19 @@ class ScannerApp(tk.Tk):
             fz = data.get("finviz_min_interval")
             if isinstance(fz, (int, float)) and 0.1 <= fz <= 10.0:
                 self._pending_finviz_min_interval = float(fz)
+            # Float coloration: cutoff stored in raw shares; clamp to the
+            # same range (in millions) the dialog enforces.
+            flt = data.get("float_low_threshold")
+            if isinstance(flt, (int, float)) and not isinstance(flt, bool):
+                lo_m, hi_m = LOW_FLOAT_RANGE_M
+                if lo_m * 1_000_000 <= flt <= hi_m * 1_000_000:
+                    self._pending_float_low_threshold = float(flt)
+            for key, attr in (("float_low_color", "_pending_float_low_color"),
+                              ("float_high_color", "_pending_float_high_color")):
+                v = data.get(key)
+                # "" is valid (= follow theme); otherwise must be #RRGGBB.
+                if isinstance(v, str) and (v == "" or self._is_valid_hex_color(v)):
+                    setattr(self, attr, v)
             self._pending_search_visible = bool(data.get("search_visible", False))
             self._pending_search_kw = data.get("search_kw", "") or ""
             self._pending_search_date = data.get("search_date", "") or ""
@@ -9246,6 +9412,9 @@ class ScannerApp(tk.Tk):
                 "watch_mode": self.watch_mode.get(),
                 "column_widths": col_widths,
                 "finviz_min_interval": float(self.fetcher.finviz_min_interval),
+                "float_low_threshold": float(self.fetcher.float_low_threshold),
+                "float_low_color": str(getattr(self, "float_low_color", "") or ""),
+                "float_high_color": str(getattr(self, "float_high_color", "") or ""),
                 "search_visible": bool(self.search_visible.get()),
                 "search_kw": self.entry_search_kw.get(),
                 "search_date": self.entry_search_date.get(),
