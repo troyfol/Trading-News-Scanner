@@ -49,8 +49,17 @@ def _fail(msg):
 def _make_app():
     """Construct the scanner with the main window hidden. Returns the
     app instance; caller must call _teardown(app) in finally."""
+    import gc
     import tkinter as tk
     import scan_sec as mod
+    # Reap the PRIOR test's Tk root (already out of scope) NOW, on the main
+    # thread, before creating a new one. This suite builds ~20 Tk() roots in
+    # one process; if their tkinter Variables/interpreters are left for a
+    # lazy GC at a random later point, finalization can land mid-interpreter-
+    # teardown and abort the whole process with the fatal
+    # "Tcl_AsyncDelete: async handler deleted by the wrong thread". A
+    # deterministic collect here keeps each root's teardown isolated.
+    gc.collect()
     app = mod.ScannerApp()
     app.withdraw()
     app.update_idletasks()
@@ -64,7 +73,13 @@ def _teardown(app):
     except Exception:
         pass
     try:
+        # stop() AND join(): without the join, each test's daemon watch
+        # thread lingers and keeps polling UIA. Across ~20 construct/teardown
+        # cycles those leftover threads accumulate and contend on UIA, which
+        # is what intermittently pushed a later test's own stop()+join() past
+        # its timeout. Reaping here keeps every test isolated.
         app.watch_thread.stop()
+        app.watch_thread.join(timeout=10.0)
     except Exception:
         pass
     try:
@@ -478,7 +493,13 @@ def test_wave3_robustness_hardening():
         wt = app.watch_thread
         if wt is not None:
             wt.stop()
-            wt.join(timeout=2.0)
+            # Generous join window: stop() wakes the poll sleep instantly,
+            # but it can't interrupt an in-flight get_info(); on the very
+            # first (cold) process run the initial COM/UIA enumeration can
+            # run for many seconds while the OS disk cache for comtypes is
+            # cold, which made this assertion flaky. 20s clears the cold
+            # path without masking a genuinely wedged thread.
+            wt.join(timeout=20.0)
             assert not wt._thread.is_alive(), (
                 "WatchThread did not exit after stop()+join()"
             )
@@ -571,6 +592,13 @@ def test_status_loop_paints_stall_indicator():
         c = app.colors
         # Force stall.
         wt = app.watch_thread
+        # Stop + join the live daemon watcher first: its poll loop sets
+        # _call_start/_call_end on every get_info() cycle, which races the
+        # forced values below and intermittently clears the stall before
+        # status_loop reads it. Quiescing the thread makes the test
+        # deterministic without weakening what it checks.
+        wt.stop()
+        wt.join(timeout=10.0)
         with wt._lock:
             wt._call_start = time.time() - (wt.STALL_THRESHOLD_SEC + 1)
             wt._call_end = 0.0
@@ -623,6 +651,91 @@ def test_etf_map_fallback_warning_fires():
         print("ETF map fallback warning OK")
     finally:
         etf_map.logger.removeHandler(handler)
+
+
+def test_etf_holdings_map_and_indicator():
+    """Multi-holding ETF holdings: sector-label derivation, storage
+    round-trip, the <2-holding drop rule, reverse inversion with the
+    leverage-first sort, the ETF-self indicator text, and the live-app
+    indicator routing (primary + 'Held' second column)."""
+    _hr("ETF holdings map + indicator wiring")
+    import etf_holdings as EH
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    # derive_sector_label: a dominant REAL sector -> short label; diversified
+    # / swap-dominated ("Other") / empty -> "" (no high-confidence label).
+    assert EH.derive_sector_label("Technology",
+                                  [{"n": "Technology", "w": 99.9}]) == "Tech"
+    assert EH.derive_sector_label("Industrials",
+                                  [{"n": "Industrials", "w": 89.0}]) == "Industrials"
+    assert EH.derive_sector_label("Large Blend",
+                                  [{"n": "Technology", "w": 38.0}]) == ""
+    assert EH.derive_sector_label("Trading--Leveraged Equity",
+                                  [{"n": "Other", "w": 84.0}]) == ""
+    assert EH.derive_sector_label("X", []) == ""
+
+    import scan_sec as mod
+    _self = mod.ScannerApp._etf_self_text
+    assert _self({"sector_label": "Tech", "mult": None}) == "ETF: Tech"
+    assert _self({"sector_label": "", "mult": 3.0}) == "ETF: 3X"
+    assert _self({"sector_label": "Tech", "mult": 2.0}) == "ETF: Tech 2X"
+    assert _self({"sector_label": "", "mult": None}) == "ETF:"
+
+    td = Path(tempfile.mkdtemp())
+    try:
+        eh = EH.EtfHoldings(path=td / "etf_holdings.json")
+        profiles = {
+            "XLK": {"mult": None, "category": "Technology",
+                    "sector_label": "Tech", "count": 75, "date": "Jun 17, 2026",
+                    "holdings": [{"ticker": "NVDA", "name": "NVIDIA", "weight": 13.0},
+                                 {"ticker": "AAPL", "name": "Apple", "weight": 11.0}]},
+            "SOXL": {"mult": 3.0, "category": "Trading--Leveraged Equity",
+                     "sector_label": "", "count": 53, "date": "Jun 16, 2026",
+                     "holdings": [{"ticker": "NVDA", "name": "NVIDIA", "weight": 4.5},
+                                  {"ticker": "AVGO", "name": "Broadcom", "weight": 4.0}]},
+            # <2 distinct holdings: must be dropped by normalize so it never
+            # pollutes the reverse map (single-holding == single-stock map's job).
+            "BADX": {"mult": None, "category": "x",
+                     "holdings": [{"ticker": "ONLY", "weight": 1.0}]},
+        }
+        eh.replace(profiles, source="test", errors=[])
+
+        assert (td / "etf_holdings.json").exists()
+        assert eh.is_etf("XLK") and eh.is_etf("SOXL")
+        assert not eh.is_etf("BADX"), "single-holding ETF should be dropped"
+
+        p = eh.get_profile("XLK")
+        assert p and p["sector_label"] == "Tech" and len(p["holdings"]) == 2
+
+        # Reverse inversion + leverage-first sort: NVDA is in both; the
+        # leveraged SOXL must sort ahead of the non-levered XLK.
+        assert [x["etf"] for x in eh.get_holders_for("NVDA")] == ["SOXL", "XLK"]
+        assert eh.get_holders_for("AAPL")[0]["etf"] == "XLK"
+        assert eh.get_holders_for("ZZZZ") == []
+
+        # Reload from disk reproduces the same derived reverse map.
+        eh2 = EH.EtfHoldings(path=td / "etf_holdings.json")
+        assert [x["etf"] for x in eh2.get_holders_for("NVDA")] == ["SOXL", "XLK"]
+
+        # Live-app indicator routing.
+        app = _make_app()
+        try:
+            app.etf_holdings = eh
+            app.current_symbol = "XLK"
+            app._update_etf_label("XLK")               # symbol IS an ETF
+            assert app.lbl_etf.cget("text") == "ETF: Tech"
+            assert app.lbl_etf_hold.cget("text") == "", "ETF-self must hide 'Held'"
+            app.current_symbol = "NVDA"
+            app._update_etf_label("NVDA")              # stock held by ETFs
+            assert app.lbl_etf_hold.cget("text") == "Held: 2", \
+                app.lbl_etf_hold.cget("text")
+        finally:
+            _teardown(app)
+        print("ETF holdings map + indicator OK")
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
 
 
 def test_cik_resolver_close_joins_refresh_thread():
@@ -904,12 +1017,19 @@ def main():
     test_watchthread_is_stalled_initial_false()
     test_status_loop_paints_stall_indicator()
     test_etf_map_fallback_warning_fires()
+    test_etf_holdings_map_and_indicator()
     test_finviz_ea_synthesizer()
     test_eps_sales_surpr_cell_parser()
     test_finviz_ea_yoy_small_base_floor()
     test_parquet_auto_reload_on_mtime_change()
     test_cik_resolver_close_joins_refresh_thread()
     test_app_repeated_construct_destroy_is_safe()
+    # Reap the final Tk root on the main thread before the process exits,
+    # so interpreter-shutdown GC has no leftover root to finalize on the
+    # wrong thread (which would abort with Tcl_AsyncDelete after we've
+    # already declared success).
+    import gc
+    gc.collect()
     print("=" * 40)
     print("ALL SMOKETESTS PASSED")
 

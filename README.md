@@ -2,7 +2,7 @@
 
 A real-time news, SEC filing, and earnings scanner for active traders on Windows. Morning Scanner floats above your charting platform, automatically detects which ticker you're viewing, and pulls up relevant news headlines, SEC filing activity, float and short data, earnings proximity, and more — switching automatically as you change symbols.
 
-<img width="1914" height="1021" alt="spcx" src="https://github.com/user-attachments/assets/0c229de9-da5b-49b8-b9ba-24538618474d" />
+![Morning Scanner](sndk.png)
 
 A **single unified script** — [`scan_sec.py`](scan_sec.py) — supports three trading platforms. Switch between them with the **TS / TITAN / TV** radio buttons; the active mode persists across sessions.
 
@@ -28,7 +28,9 @@ The window watcher runs on a dedicated daemon thread with a stall watchdog, so a
 - **Earnings row** — earnings date, EPS surprise, sales surprise, and EPS / revenue YoY on a dedicated togglable row, color-coded by proximity, with a future-date suppression safeguard.
 - **Earnings chart** — double-click any earnings label to open a per-quarter chart (YoY % and Surprise % bars on outlier-robust axes, click-to-highlight a quarter, live color editor). Reads an optional earnings-history parquet you supply (see [Optional earnings data](#optional-earnings-data)).
 - **Historical Lookup** — surfaces news and SEC EDGAR filings around any date for the active symbol, with async one-line summaries for filing rows. News enrichment can optionally use Polygon (see [API keys](#api-keys--privacy)).
-- **Single-stock ETF indicator** — flags any active symbol covered by a leveraged or inverse ETF (and vice-versa).
+- **ETF coverage** — two indicators driven by JSON maps you can refresh from Settings:
+  - **Single-stock ETF** — flags any active symbol covered by a leveraged / inverse single-stock ETF (and, when the symbol *is* one, what it tracks).
+  - **Multi-holding ETFs** — a second **Held: N** indicator counts the sector / index / thematic / leveraged-index ETFs that hold the active stock as a top holding (click for the list). When the active symbol *is* one of those ETFs, the indicator turns blue with a high-confidence sector/strategy + leverage label (e.g. `ETF: Tech`, `ETF: 3X`), and hovering lists its current constituents. Holdings are sourced from [stockanalysis.com](https://stockanalysis.com).
 - **Quality-of-life** — keyword highlighting, time filters (Today / 48 h / All), live per-source status dots, clickable headlines, dark / light theme, adjustable font size, always-on-top, and persistent settings.
 
 ## Requirements
@@ -68,11 +70,14 @@ The default **TS** and **TV** modes need only `pywin32`. The **TITAN** mode addi
 | Double-click an earnings label | Open the per-quarter earnings chart |
 | Click company name | Open the Finviz quote page |
 | Click **SEC:** / **Shelf:** labels | Open EDGAR recent filings / S-3 filings |
+| Click **ETF:** label | Single-stock ETF → Finviz for the underlying; multi-holding ETF → constituents popup |
+| Hover **ETF:** label (when symbol is an ETF) | Tooltip of the ETF's current constituents |
+| Click **Held: N** label | List of multi-holding ETFs that hold the active stock |
 
 ## API keys & privacy
 
 - **Polygon (optional)** — Historical Lookup news enrichment can use the Polygon API. The key is stored in the **Windows Credential Manager** via `keyring` (never written to disk, never logged) and sent as an `Authorization: Bearer` header. Set / clear it from the Settings dialog. Without it, Historical Lookup still works from EDGAR.
-- **SEC contact** — SEC fair-access guidance asks for a declared contact in the `User-Agent`. Set the `MS_SEC_CONTACT` environment variable to your email; if unset, a non-deliverable placeholder is used and SEC may throttle requests. No contact email is hardcoded in the source.
+- **SEC contact** — SEC fair-access guidance asks for a declared contact in the `User-Agent`. Set it in the **Settings dialog** (*SEC access → Contact email*) — it's saved with your other settings and applied live. The `MS_SEC_CONTACT` environment variable is still honored as a fallback when the Settings field is blank. If neither is set, a non-deliverable placeholder is used and SEC may throttle requests. No contact email is hardcoded in the source.
 
 ## Optional earnings data
 
@@ -87,7 +92,7 @@ pip install pyinstaller
 pyinstaller TNS.spec
 ```
 
-This bundles Tcl/Tk, the `single_stock_etfs.json` seed, and the keyring/pyarrow/matplotlib backends. TITAN (UIA) mode additionally requires `comtypes` to be installed in the build environment and listed in the spec's `hiddenimports`.
+This bundles Tcl/Tk, the `single_stock_etfs.json` + `etf_holdings.json` seeds, and the keyring/pyarrow/matplotlib backends. TITAN (UIA) mode additionally requires `comtypes` to be installed in the build environment and listed in the spec's `hiddenimports`.
 
 ## Data sources
 
@@ -97,6 +102,7 @@ This bundles Tcl/Tk, the `single_stock_etfs.json` seed, and the keyring/pyarrow/
 | [SEC EDGAR](https://data.sec.gov) | CIK mapping, filing recency, S-3 shelf registration, XBRL company-facts (via the `submissions` / `companyfacts` JSON APIs) |
 | [GlobeNewswire](https://www.globenewswire.com) · [PRNewswire](https://www.prnewswire.com) · [Yahoo Finance](https://finance.yahoo.com) | Press-release and market-news headlines (RSS) |
 | [Polygon](https://polygon.io) | Optional historical news for the Historical Lookup |
+| [stockanalysis.com](https://stockanalysis.com) | Multi-holding ETF holdings, sector mix, and category for the ETF indicators (refreshed from Settings) |
 
 ## Limitations
 

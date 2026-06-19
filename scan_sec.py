@@ -175,6 +175,7 @@ SETTINGS_FILE = BASE_DIR / "scanner_settings.json"
 # alongside the exe (same pattern as the other caches above). Custom
 # path can be set via Settings → ETF Map.
 from etf_map import EtfMap, format_mult, DEFAULT_WRITABLE_PATH as ETF_MAP_DEFAULT_PATH
+from etf_holdings import EtfHoldings
 
 # SEC fair-access guidance asks for a real declared sample contact in
 # the User-Agent. Read it from the MS_SEC_CONTACT env var when set;
@@ -182,10 +183,38 @@ from etf_map import EtfMap, format_mult, DEFAULT_WRITABLE_PATH as ETF_MAP_DEFAUL
 # exe carries no real PII) and warn once at startup that SEC may throttle
 # the default. ``_SEC_CONTACT_IS_PLACEHOLDER`` drives that one-line warn
 # in ScannerApp.__init__ (where the module logger is available).
+_SEC_CONTACT_PLACEHOLDER = "admin@example.com"
 _SEC_CONTACT = os.environ.get("MS_SEC_CONTACT", "").strip()
 _SEC_CONTACT_IS_PLACEHOLDER = not _SEC_CONTACT
-UA_LIST = [f"MorningScanner/1.0 ({_SEC_CONTACT or 'admin@example.com'})"]
+UA_LIST = [f"MorningScanner/1.0 ({_SEC_CONTACT or _SEC_CONTACT_PLACEHOLDER})"]
 HEADERS = {"User-Agent": UA_LIST[0]}
+
+# A real declared contact is preferred but not required. We accept the
+# common "local@domain.tld" shape and reject obvious junk so a typo in
+# the Settings field can't silently ship a malformed User-Agent. Blank is
+# allowed (callers treat it as "use the env var / placeholder fallback").
+_SEC_CONTACT_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _is_valid_sec_contact(s) -> bool:
+    return bool(_SEC_CONTACT_RE.match((s or "").strip()))
+
+
+def _set_sec_contact(contact) -> None:
+    """Rebuild the SEC User-Agent globals from ``contact`` at runtime.
+
+    Every SEC scraper reads ``HEADERS["User-Agent"]`` / ``UA_LIST[0]`` at
+    call time, so mutating these dict/list entries IN PLACE (never
+    rebinding the names) propagates a Settings-menu change to all future
+    SEC requests with no restart. A blank/None contact falls back to the
+    non-deliverable placeholder."""
+    global _SEC_CONTACT, _SEC_CONTACT_IS_PLACEHOLDER
+    contact = (contact or "").strip()
+    _SEC_CONTACT = contact
+    _SEC_CONTACT_IS_PLACEHOLDER = not contact
+    ua = f"MorningScanner/1.0 ({contact or _SEC_CONTACT_PLACEHOLDER})"
+    UA_LIST[0] = ua
+    HEADERS["User-Agent"] = ua
 BROWSER_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
     "Referer": "https://finviz.com"
@@ -2768,10 +2797,9 @@ class HistoricalLookup:
 class ScannerApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        if _SEC_CONTACT_IS_PLACEHOLDER:
-            _log.warning("SEC User-Agent uses the placeholder contact "
-                         "(admin@example.com) — set the MS_SEC_CONTACT env "
-                         "var to a real email if SEC throttles requests")
+        # The SEC placeholder-contact warning is emitted later, after
+        # load_settings + _set_sec_contact have had a chance to apply a
+        # Settings-menu / env-var contact (see the commit block below).
         self.fetcher = DataFetcher()
         self.watch_mode = tk.StringVar(value="TS")
         # Lazily built at the end of __init__ once settings have been
@@ -2846,6 +2874,21 @@ class ScannerApp(tk.Tk):
         )
         self.lbl_etf.pack(side="left", padx=5, anchor="sw", pady=(0, 4))
         self.lbl_etf.bind("<Button-1>", self._on_etf_label_click)
+        # Hover tooltip when the active symbol IS a multi-holding ETF —
+        # lists its current constituents (alphabetical).
+        self.lbl_etf.bind("<Enter>", self._on_etf_label_enter)
+        self.lbl_etf.bind("<Leave>", self._on_etf_label_leave)
+
+        # Second ETF indicator ("column 2"): when the active symbol is a
+        # STOCK, shows how many multi-holding ETFs (levered or not) hold
+        # it as a top-N constituent. Click → popup listing them. Hidden
+        # (text "—") when the symbol has no such holders or is itself an ETF.
+        self.lbl_etf_hold = tk.Label(
+            self.header_top, text="",
+            bg=self.colors["BG"], fg=self.colors["CREDIT"],
+        )
+        self.lbl_etf_hold.pack(side="left", padx=5, anchor="sw", pady=(0, 4))
+        self.lbl_etf_hold.bind("<Button-1>", self._on_etf_hold_label_click)
 
         self.lbl_meta = tk.Label(self.header_top, text="", bg=self.colors["BG"], fg=self.colors["FG"])
         self.lbl_meta.pack(side="left", padx=5, anchor="sw", pady=(0, 4))
@@ -3153,6 +3196,9 @@ class ScannerApp(tk.Tk):
         self._tooltip_win = None
         self._tooltip_after = None
         self._tooltip_iid = None
+        # Dedicated tooltip for the ETF-self constituent hover (separate
+        # from the tree tooltip above so the two never fight over state).
+        self._etf_tip_win = None
         self.tree.bind("<Motion>", self._on_tree_hover)
         self.tree.bind("<Leave>", lambda e: self._hide_tooltip())
         
@@ -3183,6 +3229,18 @@ class ScannerApp(tk.Tk):
             setattr(self, _attr, _val)
         self.historical_forms = self._pending_historical_forms
         self.historical_polygon_max_tickers = self._pending_historical_polygon_max_tickers
+        # SEC contact: a saved Settings value wins; blank falls back to the
+        # import-time env var, then the placeholder. Apply to the live UA
+        # globals now (before the first SEC fetch on symbol change) and warn
+        # once if we're still on the placeholder.
+        self.sec_contact = self._pending_sec_contact
+        _set_sec_contact(self.sec_contact
+                         or os.environ.get("MS_SEC_CONTACT", "").strip())
+        if _SEC_CONTACT_IS_PLACEHOLDER:
+            _log.warning("SEC User-Agent uses the placeholder contact (%s) — "
+                         "set a real email in Settings → SEC access (or the "
+                         "MS_SEC_CONTACT env var) if SEC throttles requests",
+                         _SEC_CONTACT_PLACEHOLDER)
         if self._pending_search_kw:
             self.entry_search_kw.insert(0, self._pending_search_kw)
         if self._pending_search_date:
@@ -3232,6 +3290,16 @@ class ScannerApp(tk.Tk):
             _log.warning("ETF map init failed (%s); indicator disabled",
                           type(exc).__name__)
             self.etf_map = None
+        # Multi-holding ETF holdings map (sector/index/thematic + leveraged
+        # index funds). Independent of the single-stock map and always at
+        # its default alongside-the-exe location. Drives the second "Held"
+        # indicator (stock -> ETFs holding it) and the ETF-self tooltip.
+        try:
+            self.etf_holdings = EtfHoldings()
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("ETF holdings init failed (%s); held indicator disabled",
+                          type(exc).__name__)
+            self.etf_holdings = None
         # Initial paint of the indicator (will be no-op until a symbol
         # is picked up by the watcher).
         self._update_etf_label(self.current_symbol)
@@ -3536,10 +3604,34 @@ class ScannerApp(tk.Tk):
             font=std, **btn_conf,
         ).pack(side="left", padx=(6, 0))
 
+        # ----- SEC access -----
+        tk.Label(wrap, text="SEC access", font=std_bold, **lbl_conf).grid(
+            row=20, column=0, sticky="w", pady=(12, 4),
+        )
+        tk.Label(wrap, text="Contact email", font=std, **lbl_conf).grid(
+            row=21, column=0, sticky="w", padx=(12, 6),
+        )
+        var_sec_contact = tk.StringVar(value=str(getattr(self, "sec_contact", "") or ""))
+        ent_sec_contact = tk.Entry(
+            wrap, textvariable=var_sec_contact, width=40, font=small, **ent_conf,
+        )
+        ent_sec_contact.grid(row=21, column=1, columnspan=3, sticky="we")
+        tk.Label(
+            wrap,
+            text="  declared in the SEC User-Agent (fair-access). Blank = "
+                 "non-deliverable placeholder; SEC may throttle.",
+            font=small, bg=c["BG"], fg=c["CREDIT"],
+        ).grid(row=22, column=0, columnspan=4, sticky="w", padx=(12, 0))
+
         err_lbl = tk.Label(wrap, text="", bg=c["BG"], fg=c["TXT_BAD"], font=std)
-        err_lbl.grid(row=20, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        err_lbl.grid(row=23, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
         def save_and_close():
+            # Validate SEC contact (blank is allowed = placeholder/env fallback)
+            sec_contact_val = var_sec_contact.get().strip()
+            if sec_contact_val and not _is_valid_sec_contact(sec_contact_val):
+                err_lbl.config(text="SEC contact must be a valid email (or blank)")
+                return
             # Validate Finviz throttle
             try:
                 throttle_val = float(var_throttle.get().strip())
@@ -3593,6 +3685,11 @@ class ScannerApp(tk.Tk):
                 return
             self.historical_forms = forms_val
             self.historical_polygon_max_tickers = max_tk
+            # SEC contact — apply to the live UA globals immediately so the
+            # next SEC request uses it. Blank reverts to the env var / placeholder.
+            self.sec_contact = sec_contact_val
+            _set_sec_contact(sec_contact_val
+                             or os.environ.get("MS_SEC_CONTACT", "").strip())
             # ETF map path. Empty string = use default alongside-the-exe
             # location. If the user typed a non-blank path, push it to
             # the running EtfMap, which reloads + falls back to the
@@ -3643,11 +3740,12 @@ class ScannerApp(tk.Tk):
                     self, "historical_polygon_max_tickers", 5)),
                 "etf_map_custom_path": str(getattr(
                     self, "etf_map_custom_path", "") or ""),
+                "sec_contact": str(getattr(self, "sec_contact", "") or ""),
             })
             dlg.destroy()
 
         btn_row = tk.Frame(wrap, bg=c["BG"])
-        btn_row.grid(row=21, column=0, columnspan=4, sticky="e", pady=(12, 0))
+        btn_row.grid(row=24, column=0, columnspan=4, sticky="e", pady=(12, 0))
         tk.Button(btn_row, text="Cancel", command=dlg.destroy, font=std, **btn_conf).pack(
             side="right", padx=(6, 0),
         )
@@ -3704,6 +3802,9 @@ class ScannerApp(tk.Tk):
         # current state, so re-derive it rather than picking a single color.
         if hasattr(self, "lbl_etf"):
             self.lbl_etf.config(bg=c["BG"])
+            if hasattr(self, "lbl_etf_hold"):
+                self.lbl_etf_hold.config(bg=c["BG"])
+            # Re-derives both the primary and the 'Held' indicator state/color.
             self._update_etf_label(self.current_symbol)
         self.lbl_meta.config(bg=c["BG"], fg=c["FG"])
         self.earnings_row.config(bg=c["BG"])
@@ -3785,6 +3886,8 @@ class ScannerApp(tk.Tk):
         self.lbl_float.config(font=("Segoe UI", s+4, "bold"))
         if hasattr(self, "lbl_etf"):
             self.lbl_etf.config(font=("Segoe UI", s+2, "bold"))
+        if hasattr(self, "lbl_etf_hold"):
+            self.lbl_etf_hold.config(font=("Segoe UI", s+2, "bold"))
         self.lbl_meta.config(font=("Segoe UI", s+2))
         self.lbl_earnings.config(font=("Segoe UI", s+2))
         self.lbl_eps_surp.config(font=("Segoe UI", s+2))
@@ -8242,28 +8345,75 @@ class ScannerApp(tk.Tk):
         if lbl is None:
             return
         c = self.colors
+        # Always recompute the second ("Held") indicator alongside the
+        # primary one — they describe the same symbol from two angles.
+        self._update_etf_hold_label(symbol)
+        # A symbol change invalidates any open ETF-self tooltip.
+        self._hide_etf_holdings_tip()
         if not symbol or symbol == "—" or self.etf_map is None:
             lbl.config(text="ETF: —", fg=c["CREDIT"], cursor="")
             return
-        # Reverse first — if the active ticker IS an ETF, that takes
-        # priority over showing it as an underlying (they're disjoint
-        # sets in practice anyway).
+        # 1) Single-stock leveraged ETF (etf_map reverse) — highest priority.
         rev = self.etf_map.get_underlying_for(symbol)
         if rev:
             text = f"ETF: {rev['underlying']} {format_mult(rev['mult'])}"
             lbl.config(text=text, fg=c["ETF_BLUE"], cursor="hand2")
             return
+        # 2) Multi-holding ETF (sector/index/thematic/leveraged-index). Blue,
+        #    with a high-confidence sector/strategy prefix + leverage when
+        #    available (e.g. "ETF: Tech", "ETF: 3X", "ETF: Industrials 3X").
+        prof = self.etf_holdings.get_profile(symbol) if self.etf_holdings else None
+        if prof:
+            lbl.config(text=self._etf_self_text(prof), fg=c["ETF_BLUE"],
+                       cursor="hand2")
+            return
+        # 3) Otherwise it's a stock: does the single-stock map track it?
         etfs = self.etf_map.get_etfs_for(symbol)
         if etfs:
             lbl.config(text="ETF: YES", fg=c["FG"], cursor="hand2")
             return
         lbl.config(text="ETF: NO", fg=c["CREDIT"], cursor="")
 
+    @staticmethod
+    def _etf_self_text(prof) -> str:
+        """Indicator text for a symbol that IS a multi-holding ETF:
+        ``ETF: [<sector>] [<mult>X]`` — omitting whichever part is absent."""
+        parts = []
+        label = (prof.get("sector_label") or "").strip()
+        if label:
+            parts.append(label)
+        mult = prof.get("mult")
+        if mult:
+            parts.append(format_mult(mult).upper())  # "3x" -> "3X"
+        return "ETF: " + " ".join(parts) if parts else "ETF:"
+
+    def _update_etf_hold_label(self, symbol):
+        """Repaint the second 'Held' indicator: count of multi-holding ETFs
+        that hold ``symbol``. Blank when none, the symbol is itself an ETF,
+        or holdings data isn't available."""
+        lbl = getattr(self, "lbl_etf_hold", None)
+        if lbl is None:
+            return
+        c = self.colors
+        if (not symbol or symbol == "—" or self.etf_holdings is None
+                or self.etf_holdings.is_etf(symbol)
+                or (self.etf_map is not None
+                    and self.etf_map.get_underlying_for(symbol))):
+            lbl.config(text="", cursor="")
+            return
+        holders = self.etf_holdings.get_holders_for(symbol)
+        if holders:
+            lbl.config(text=f"Held: {len(holders)}", fg=c["ETF_BLUE"],
+                       cursor="hand2")
+        else:
+            lbl.config(text="", cursor="")
+
     def _on_etf_label_click(self, event=None):
         """Dispatch the click based on the current indicator state.
 
+        - Single-stock ETF → open Finviz for the underlying it tracks
+        - Multi-holding ETF → popup listing its top-N constituents
         - Underlying-with-ETFs → dropdown popup listing tracking ETFs
-        - Symbol-is-an-ETF → open Finviz for the underlying it tracks
         - No data → no action
         """
         sym = self.current_symbol
@@ -8274,10 +8424,98 @@ class ScannerApp(tk.Tk):
             safe = url_quote(str(rev["underlying"]), safe="")
             self._safe_open_url(f"https://finviz.com/quote.ashx?t={safe}")
             return
+        prof = self.etf_holdings.get_profile(sym) if self.etf_holdings else None
+        if prof:
+            self._show_etf_constituents_popup(sym, prof, event)
+            return
         etfs = self.etf_map.get_etfs_for(sym)
         if not etfs:
             return
         self._show_etf_popup(sym, etfs, event)
+
+    def _on_etf_hold_label_click(self, event=None):
+        """Click on the 'Held: N' indicator → popup of the multi-holding
+        ETFs that hold the active stock."""
+        sym = self.current_symbol
+        if not sym or sym == "—" or self.etf_holdings is None:
+            return
+        holders = self.etf_holdings.get_holders_for(sym)
+        if not holders:
+            return
+        self._show_etf_holders_popup(sym, holders, event)
+
+    # ---- ETF-self constituent tooltip ------------------------------------
+
+    def _on_etf_label_enter(self, event=None):
+        sym = self.current_symbol
+        if not sym or sym == "—" or self.etf_holdings is None:
+            return
+        prof = self.etf_holdings.get_profile(sym)
+        if not prof:
+            return
+        self._show_etf_holdings_tip(sym, prof)
+
+    def _on_etf_label_leave(self, event=None):
+        self._hide_etf_holdings_tip()
+
+    def _hide_etf_holdings_tip(self):
+        win = getattr(self, "_etf_tip_win", None)
+        if win is not None:
+            try:
+                win.destroy()
+            except tk.TclError:
+                pass
+            self._etf_tip_win = None
+
+    def _show_etf_holdings_tip(self, sym, prof):
+        """Borderless tooltip listing the ETF's constituents alphabetically
+        (top-N from the source). Anchored just below the ETF indicator."""
+        self._hide_etf_holdings_tip()
+        holdings = prof.get("holdings") or []
+        if not holdings:
+            return
+        c = self.colors
+        names = sorted({h["ticker"] for h in holdings})
+        count = prof.get("count") or len(names)
+        shown = len(names)
+        header = sym
+        mult = prof.get("mult")
+        if prof.get("sector_label"):
+            header += f" · {prof['sector_label']}"
+        if mult:
+            header += f" · {format_mult(mult).upper()}"
+        cap = f"Top {shown} of {count} holdings" if count > shown else \
+              f"{shown} holding(s)"
+        if prof.get("date"):
+            cap += f"  ({prof['date']})"
+        # Wrap the ticker list into rows of ~8 for a compact tooltip.
+        rows = [", ".join(names[i:i + 8]) for i in range(0, len(names), 8)]
+        body = "\n".join(rows)
+        try:
+            tip = tk.Toplevel(self)
+            tip.wm_overrideredirect(True)
+            try:
+                tip.attributes("-topmost", True)
+            except tk.TclError:
+                pass
+            frame = tk.Frame(tip, bg=c["ACCENT"], bd=1, relief="solid")
+            frame.pack()
+            tk.Label(frame, text=header, bg=c["ACCENT"], fg=c["ETF_BLUE"],
+                     font=("Segoe UI", max(8, self.base_font_size - 1), "bold"),
+                     anchor="w", justify="left").pack(fill="x", padx=6, pady=(4, 0))
+            tk.Label(frame, text=cap, bg=c["ACCENT"], fg=c["CREDIT"],
+                     font=("Segoe UI", max(7, self.base_font_size - 2)),
+                     anchor="w", justify="left").pack(fill="x", padx=6)
+            tk.Label(frame, text=body, bg=c["ACCENT"], fg=c["FG"],
+                     font=("Consolas", max(7, self.base_font_size - 2)),
+                     anchor="w", justify="left").pack(fill="x", padx=6, pady=(2, 4))
+            # Position under the indicator.
+            x = self.lbl_etf.winfo_rootx()
+            y = self.lbl_etf.winfo_rooty() + self.lbl_etf.winfo_height() + 2
+            tip.wm_geometry(f"+{x}+{y}")
+            self._etf_tip_win = tip
+        except tk.TclError:
+            self._etf_tip_win = None
 
     def _open_etf_refresh_dialog(self, pending_path_str: str):
         """Modal terminal-style window that streams scrape progress live.
@@ -8385,6 +8623,32 @@ class ScannerApp(tk.Tk):
                 progress_cb(f"Saved. Indicator updated.")
             except Exception as exc:  # noqa: BLE001
                 progress_cb(f"SAVE ERROR: {exc!r}")
+            # --- Multi-holding ETF holdings (stockanalysis.com) ---
+            # Runs after the single-stock map on the SAME worker thread so
+            # one Refresh updates both. Always written to the holdings map's
+            # own default path (independent of the single-stock custom path).
+            try:
+                from etf_scraper import scrape_etf_holdings
+                progress_cb("")
+                progress_cb("=== Multi-holding ETF holdings ===")
+                existing_profiles = {}
+                try:
+                    if self.etf_holdings is not None:
+                        existing_profiles = self.etf_holdings.snapshot_profiles()
+                except Exception:  # noqa: BLE001
+                    existing_profiles = {}
+                profiles, h_errors = scrape_etf_holdings(
+                    progress_cb, existing_profiles=existing_profiles,
+                )
+                if self.etf_holdings is None:
+                    self.etf_holdings = EtfHoldings()
+                self.etf_holdings.replace(
+                    profiles, source="stockanalysis.com", errors=h_errors,
+                )
+                progress_cb(f"Holdings saved ({len(profiles)} ETFs, "
+                            f"{len(h_errors)} error(s)).")
+            except Exception as exc:  # noqa: BLE001
+                progress_cb(f"HOLDINGS ERROR: {exc!r}")
             # Repaint the indicator under the new map.
             def _finalize():
                 self._update_etf_label(self.current_symbol)
@@ -8555,6 +8819,131 @@ class ScannerApp(tk.Tk):
         ).pack(anchor="e", pady=(8, 0))
         win.bind("<Escape>", lambda _e: win.destroy())
 
+    def _etf_popup_window(self, title, anchor_widget, event):
+        """Shared Toplevel shell for the two ETF popups — themed, topmost,
+        anchored under ``anchor_widget`` when we have a click event."""
+        c = self.colors
+        win = tk.Toplevel(self)
+        win.title(title)
+        win.configure(bg=c["BG"])
+        win.transient(self)
+        try:
+            win.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        try:
+            if event is not None and anchor_widget is not None:
+                x = self.winfo_rootx() + anchor_widget.winfo_x()
+                y = (self.winfo_rooty() + anchor_widget.winfo_y()
+                     + anchor_widget.winfo_height() + 2)
+                win.geometry(f"+{x}+{y}")
+        except tk.TclError:
+            pass
+        return win
+
+    def _show_etf_holders_popup(self, stock, holders, event=None):
+        """Toplevel listing every multi-holding ETF that holds ``stock``,
+        leverage-first then by weight. Each row clickable → Finviz for the
+        ETF. Mirrors the single-stock popup's organizational scheme."""
+        c = self.colors
+        win = self._etf_popup_window(f"ETFs holding {stock}",
+                                     getattr(self, "lbl_etf_hold", None), event)
+        std = ("Segoe UI", self.base_font_size)
+        std_bold = ("Segoe UI", self.base_font_size, "bold")
+        small = ("Segoe UI", max(7, self.base_font_size - 1))
+        wrap = tk.Frame(win, bg=c["BG"])
+        wrap.pack(fill="both", expand=True, padx=10, pady=8)
+        tk.Label(
+            wrap, text=f"{stock} — held by {len(holders)} multi-holding ETF(s)",
+            font=std_bold, bg=c["BG"], fg=c["FG"],
+        ).pack(anchor="w", pady=(0, 6))
+        for h in holders:
+            row = tk.Frame(wrap, bg=c["BG"])
+            row.pack(fill="x", anchor="w", pady=1)
+            mult = h.get("mult")
+            mult_txt = format_mult(mult) if mult else "—"
+            mult_color = c["CREDIT"] if not mult else (
+                c["TXT_OK"] if mult > 0 else c["TXT_BAD"])
+            tk.Label(row, text=h.get("etf", ""), font=std_bold,
+                     bg=c["BG"], fg=c["ETF_BLUE"], cursor="hand2", width=8,
+                     anchor="w").pack(side="left")
+            tk.Label(row, text=mult_txt, font=std, bg=c["BG"], fg=mult_color,
+                     width=6, anchor="w").pack(side="left", padx=(4, 8))
+            try:
+                wt = f"{float(h.get('weight') or 0):.1f}%"
+            except (TypeError, ValueError):
+                wt = ""
+            tk.Label(row, text=wt, font=std, bg=c["BG"], fg=c["FG"],
+                     width=7, anchor="w").pack(side="left")
+            note = h.get("sector_label") or h.get("category") or ""
+            if note:
+                tk.Label(row, text=f"({note})", font=small, bg=c["BG"],
+                         fg=c["CREDIT"], anchor="w").pack(side="left")
+
+            def _open(_ev=None, t=h.get("etf", "")):
+                safe = url_quote(str(t), safe="")
+                self._safe_open_url(f"https://finviz.com/quote.ashx?t={safe}")
+            for child in row.winfo_children():
+                child.bind("<Button-1>", _open)
+            row.bind("<Button-1>", _open)
+        tk.Button(wrap, text="Close", command=win.destroy,
+                  bg=c["BTN_BG"], fg=c["BTN_FG"]).pack(anchor="e", pady=(8, 0))
+        win.bind("<Escape>", lambda _e: win.destroy())
+
+    def _show_etf_constituents_popup(self, etf, prof, event=None):
+        """Toplevel listing the ETF's constituents alphabetically. Each row
+        clickable → Finviz for that holding."""
+        c = self.colors
+        win = self._etf_popup_window(f"{etf} holdings",
+                                     getattr(self, "lbl_etf", None), event)
+        std = ("Segoe UI", self.base_font_size)
+        std_bold = ("Segoe UI", self.base_font_size, "bold")
+        small = ("Segoe UI", max(7, self.base_font_size - 1))
+        wrap = tk.Frame(win, bg=c["BG"])
+        wrap.pack(fill="both", expand=True, padx=10, pady=8)
+        holdings = sorted(prof.get("holdings") or [],
+                          key=lambda h: h.get("ticker", ""))
+        count = prof.get("count") or len(holdings)
+        head = f"{etf}"
+        if prof.get("sector_label"):
+            head += f" · {prof['sector_label']}"
+        if prof.get("mult"):
+            head += f" · {format_mult(prof['mult']).upper()}"
+        cap = (f"top {len(holdings)} of {count} holdings"
+               if count > len(holdings) else f"{len(holdings)} holdings")
+        if prof.get("date"):
+            cap += f"  ({prof['date']})"
+        tk.Label(wrap, text=head, font=std_bold, bg=c["BG"],
+                 fg=c["ETF_BLUE"]).pack(anchor="w")
+        tk.Label(wrap, text=cap, font=small, bg=c["BG"],
+                 fg=c["CREDIT"]).pack(anchor="w", pady=(0, 6))
+        for h in holdings:
+            row = tk.Frame(wrap, bg=c["BG"])
+            row.pack(fill="x", anchor="w", pady=1)
+            tk.Label(row, text=h.get("ticker", ""), font=std_bold,
+                     bg=c["BG"], fg=c["ETF_BLUE"], cursor="hand2", width=8,
+                     anchor="w").pack(side="left")
+            try:
+                wt = f"{float(h.get('weight') or 0):.1f}%"
+            except (TypeError, ValueError):
+                wt = ""
+            tk.Label(row, text=wt, font=std, bg=c["BG"], fg=c["FG"],
+                     width=7, anchor="w").pack(side="left", padx=(4, 8))
+            nm = h.get("name") or ""
+            if nm:
+                tk.Label(row, text=nm, font=small, bg=c["BG"], fg=c["CREDIT"],
+                         anchor="w").pack(side="left")
+
+            def _open(_ev=None, t=h.get("ticker", "")):
+                safe = url_quote(str(t), safe="")
+                self._safe_open_url(f"https://finviz.com/quote.ashx?t={safe}")
+            for child in row.winfo_children():
+                child.bind("<Button-1>", _open)
+            row.bind("<Button-1>", _open)
+        tk.Button(wrap, text="Close", command=win.destroy,
+                  bg=c["BTN_BG"], fg=c["BTN_FG"]).pack(anchor="e", pady=(8, 0))
+        win.bind("<Escape>", lambda _e: win.destroy())
+
     def on_double_click(self, event):
         """Open the URL of the row the user double-clicked.
 
@@ -8665,6 +9054,9 @@ class ScannerApp(tk.Tk):
         # multi-ticker article cap.
         self._pending_historical_forms: str = DEFAULT_HISTORICAL_FORMS
         self._pending_historical_polygon_max_tickers: int = 5
+        # SEC fair-access contact email (User-Agent). Empty = fall back to
+        # the MS_SEC_CONTACT env var, then the non-deliverable placeholder.
+        self._pending_sec_contact: str = ""
         if not SETTINGS_FILE.exists():
             return
         try:
@@ -8695,8 +9087,16 @@ class ScannerApp(tk.Tk):
             # hand-edit) makes self.geometry() raise tk.TclError, which is
             # NOT in this block's except tuple and would crash startup.
             geo = data.get("geometry")
+            # Each position component is "<sign><number>" where the number
+            # itself may be negative on a multi-monitor setup: a window on a
+            # monitor to the LEFT/ABOVE the primary has a negative absolute
+            # coordinate, which Tk's wm geometry reports as "+-1926" (a '+'
+            # meaning "from the left edge" followed by a negative value). The
+            # inner "-?" accepts that form — without it fullmatch rejected
+            # every secondary-monitor geometry and the restore was silently
+            # skipped (window always reopened at Tk's default placement).
             if isinstance(geo, str) and re.fullmatch(
-                    r"\d+x\d+([+-]\d+){0,2}", geo):
+                    r"\d+x\d+([+-]-?\d+){0,2}", geo):
                 self.geometry(geo)
             self._pending_maximized = data.get("maximized", False)
             # font_size: accept only an int in the same 7..20 range the UI
@@ -8774,7 +9174,10 @@ class ScannerApp(tk.Tk):
             if isinstance(ecfm, (int, float)) and 0.5 <= ecfm <= 2.5:
                 self._pending_earnings_chart_font_mult = float(ecfm)
             ecg = data.get("earnings_chart_geometry")
-            if isinstance(ecg, str) and re.fullmatch(r"\d+x\d+([+-]\d+){0,2}", ecg or ""):
+            # Same "+-1926" secondary-monitor form as the main-window
+            # geometry above — the inner "-?" keeps the chart popup's
+            # restore from being skipped on a left/top monitor.
+            if isinstance(ecg, str) and re.fullmatch(r"\d+x\d+([+-]-?\d+){0,2}", ecg or ""):
                 self._pending_earnings_chart_geometry = ecg
             ecm = data.get("earnings_chart_maximized")
             if isinstance(ecm, bool):
@@ -8799,6 +9202,10 @@ class ScannerApp(tk.Tk):
             emp = data.get("etf_map_custom_path")
             if isinstance(emp, str):
                 self._pending_etf_map_custom_path = emp.strip()
+
+            sc = data.get("sec_contact")
+            if isinstance(sc, str):
+                self._pending_sec_contact = sc.strip()
 
             if self.theme_mode in THEMES:
                 self.colors = THEMES[self.theme_mode]
@@ -8863,6 +9270,7 @@ class ScannerApp(tk.Tk):
                 "etf_map_custom_path": str(getattr(
                     self, "etf_map_custom_path", "",
                 ) or ""),
+                "sec_contact": str(getattr(self, "sec_contact", "") or ""),
                 **{key: str(getattr(self, attr, ""))
                    for key, attr in self._CHART_COLOR_KEYS},
             }

@@ -33,6 +33,7 @@ The aggregated return shape matches ``etf_map.EtfMap.replace()``:
 """
 from __future__ import annotations
 
+import json
 import re
 import time
 from datetime import datetime
@@ -832,3 +833,214 @@ def _dedupe(rows: list[dict]) -> list[dict]:
         seen.add(key)
         out.append(r)
     return out
+
+
+# =============================================================================
+# MULTI-HOLDING ETF HOLDINGS (stockanalysis.com)
+# =============================================================================
+# The single-stock scrapers above map a stock -> the leveraged ETFs that
+# track ONLY it. This section covers the complementary universe: ETFs that
+# hold a BASKET of securities (sector / broad-index / thematic funds, plus
+# the leveraged index/sector funds). Source is stockanalysis.com's free,
+# no-key JSON API, which returns each ETF's top-N holdings, sector mix,
+# category, holding count, and a freshness date. See etf_holdings.EtfHoldings
+# for storage + the derived reverse (stock -> ETFs) index.
+
+STOCKANALYSIS_HOLDINGS_API = "https://api.stockanalysis.com/api/symbol/e/{sym}/holdings"
+# stockanalysis returns top-25 holdings for free/anonymous access; cap to
+# match so a future source change can't bloat the stored payload.
+_HOLDINGS_TOP_N = 25
+# Polite pacing between per-ETF requests on the refresh daemon thread.
+_HOLDINGS_PACE_SEC = 0.35
+
+# Curated multi-holding ETF universe with known leverage multiples (bear =
+# negative, non-levered = None). Hardcoding leverage here is deliberate:
+# the holdings API doesn't expose a reliable leverage field, and these are
+# well-known funds, so an annotated list is more accurate than name-parsing
+# and keeps the reverse map bounded + refreshable. Single-stock leveraged
+# ETFs (TSLL etc.) are intentionally EXCLUDED — they live in etf_map.
+CURATED_ETF_UNIVERSE: dict[str, "float | None"] = {
+    # --- Broad US index (non-levered) ---
+    "SPY": None, "VOO": None, "IVV": None, "VTI": None, "QQQ": None,
+    "QQQM": None, "DIA": None, "IWM": None, "IWB": None, "IWV": None,
+    "VTV": None, "VUG": None, "IWF": None, "IWD": None, "MDY": None,
+    "IJH": None, "IJR": None, "RSP": None, "SCHX": None, "SCHB": None,
+    "SCHG": None, "SPLG": None, "ITOT": None, "VV": None, "VXF": None,
+    # --- Broad international (non-levered) ---
+    "VEA": None, "VWO": None, "EFA": None, "EEM": None, "IEFA": None,
+    "IEMG": None, "VT": None, "VXUS": None, "ACWI": None, "VGK": None,
+    "EWJ": None, "INDA": None, "EWZ": None, "EWY": None, "EWT": None,
+    # --- US sectors (non-levered) ---
+    "XLK": None, "XLF": None, "XLE": None, "XLV": None, "XLI": None,
+    "XLY": None, "XLP": None, "XLU": None, "XLB": None, "XLRE": None,
+    "XLC": None, "VGT": None, "VHT": None, "VFH": None, "VDE": None,
+    "VIS": None, "VPU": None, "VAW": None, "VNQ": None, "VOX": None,
+    "VCR": None, "VDC": None,
+    # --- Industry / thematic (non-levered) ---
+    "SMH": None, "SOXX": None, "IGV": None, "XBI": None, "IBB": None,
+    "KRE": None, "KBE": None, "ITB": None, "XHB": None, "JETS": None,
+    "TAN": None, "ICLN": None, "LIT": None, "HACK": None, "BUG": None,
+    "BOTZ": None, "ROBO": None, "ARKK": None, "ARKG": None, "ARKW": None,
+    "ARKQ": None, "ARKF": None, "FINX": None, "SKYY": None, "CIBR": None,
+    "XME": None, "XOP": None, "OIH": None, "GDX": None, "GDXJ": None,
+    "KWEB": None, "FXI": None, "MCHI": None, "ITA": None, "PPA": None,
+    "MOO": None, "XRT": None, "IYR": None, "IYT": None, "PAVE": None,
+    "URA": None, "COPX": None, "MAGS": None, "QTUM": None, "WCLD": None,
+    # --- Dividend / factor (non-levered) ---
+    "SCHD": None, "VYM": None, "VIG": None, "DGRO": None, "NOBL": None,
+    "HDV": None, "DVY": None, "SPYD": None, "MTUM": None, "QUAL": None,
+    "USMV": None, "VLUE": None, "SPLV": None, "DGRW": None,
+    # --- Leveraged broad index ---
+    "TQQQ": 3.0, "SQQQ": -3.0, "QLD": 2.0, "QID": -2.0,
+    "UPRO": 3.0, "SPXU": -3.0, "SPXL": 3.0, "SPXS": -3.0,
+    "SSO": 2.0, "SDS": -2.0, "UDOW": 3.0, "SDOW": -3.0,
+    "DDM": 2.0, "DXD": -2.0, "TNA": 3.0, "TZA": -3.0,
+    "UWM": 2.0, "TWM": -2.0,
+    # --- Leveraged sector / thematic ---
+    "SOXL": 3.0, "SOXS": -3.0, "TECL": 3.0, "TECS": -3.0,
+    "FAS": 3.0, "FAZ": -3.0, "LABU": 3.0, "LABD": -3.0,
+    "ROM": 2.0, "USD": 2.0, "FNGU": 3.0, "FNGD": -3.0,
+    "NAIL": 3.0, "DPST": 3.0, "DRN": 3.0, "DRV": -3.0,
+    "CURE": 3.0, "RETL": 3.0, "WANT": 3.0, "DFEN": 3.0,
+    "PILL": 3.0, "UTSL": 3.0, "WEBL": 3.0,
+    "ERX": 2.0, "ERY": -2.0, "GUSH": 2.0, "DRIP": -2.0,
+    "YINN": 3.0, "YANG": -3.0, "CWEB": 2.0,
+    "NUGT": 2.0, "DUST": -2.0, "JNUG": 2.0, "JDST": -2.0,
+}
+
+
+def fetch_stockanalysis_holdings(
+    session: requests.Session, symbol: str, top_n: int = _HOLDINGS_TOP_N,
+) -> "dict | None":
+    """Fetch one ETF's holdings profile from stockanalysis.com.
+
+    Returns ``{"category", "sector_label", "count", "date", "holdings":
+    [{ticker, name, weight}, ...]}`` (``mult`` is set by the caller from the
+    curated universe), or ``None`` if the symbol isn't a recognized ETF
+    (404) or the response is unusable. Raises only via the session for a
+    genuine network exhaustion the caller wants to log.
+    """
+    # Lazy import to avoid a hard import cycle and keep this module usable
+    # standalone; etf_holdings imports nothing from here.
+    from etf_holdings import derive_sector_label
+
+    url = STOCKANALYSIS_HOLDINGS_API.format(sym=symbol.upper().strip())
+    r = _get_streamed_with_retry(session, url)
+    if r is None:
+        return None
+    try:
+        if r.status_code != 200:
+            return None
+        body = _read_capped_bytes(r, _MAX_RESPONSE_BYTES)
+    finally:
+        try:
+            r.close()
+        except Exception:
+            pass
+    try:
+        payload = json.loads(body.decode("utf-8", "replace"))
+    except (ValueError, json.JSONDecodeError):
+        return None
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        return None
+    raw_holdings = data.get("holdings")
+    if not isinstance(raw_holdings, list):
+        return None
+    holdings: list[dict] = []
+    for h in raw_holdings:
+        if not isinstance(h, dict):
+            continue
+        tk = str(h.get("s") or "").lstrip("$").upper().strip()
+        if not tk:
+            continue
+        try:
+            w = float(str(h.get("as") or "0").replace("%", "").strip())
+        except (TypeError, ValueError):
+            w = 0.0
+        holdings.append({"ticker": tk, "name": str(h.get("n") or "").strip(),
+                         "weight": w})
+        if len(holdings) >= top_n:
+            break
+    info = data.get("infoTable") if isinstance(data.get("infoTable"), dict) else {}
+    category = str(info.get("category") or "").strip()
+    try:
+        count = int(info.get("count") or data.get("count") or len(holdings))
+    except (TypeError, ValueError):
+        count = len(holdings)
+    return {
+        "category": category,
+        "sector_label": derive_sector_label(category, data.get("sectors")),
+        "count": count,
+        "date": str(data.get("date") or "").strip(),
+        "holdings": holdings,
+    }
+
+
+def scrape_etf_holdings(
+    progress_cb: ProgressCb,
+    *,
+    existing_profiles: "dict | None" = None,
+    universe: "dict | None" = None,
+    pace: float = _HOLDINGS_PACE_SEC,
+    max_etfs: "int | None" = None,
+) -> "tuple[dict, list[str]]":
+    """Fetch holdings for the curated multi-holding ETF universe.
+
+    Per-ETF failures are isolated and the prior profile (from
+    ``existing_profiles``) is preserved, so a transient 404 / rate-limit on
+    one fund never wipes the rest. Returns ``(profiles, errors)`` shaped for
+    ``EtfHoldings.replace``.
+    """
+    universe = universe if universe is not None else CURATED_ETF_UNIVERSE
+    existing_profiles = existing_profiles or {}
+    tickers = list(universe.keys())
+    if max_etfs is not None:
+        tickers = tickers[:max_etfs]
+
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": BROWSER_UA,
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+    })
+
+    profiles: dict[str, dict] = {}
+    errors: list[str] = []
+    n = len(tickers)
+    _log(progress_cb, f"Fetching holdings for {n} ETFs (stockanalysis.com)...")
+    ok = 0
+    for i, etf in enumerate(tickers, 1):
+        etf = etf.upper().strip()
+        mult = universe.get(etf)
+        try:
+            prof = fetch_stockanalysis_holdings(session, etf)
+        except requests.RequestException as exc:
+            prof = None
+            errors.append(f"{etf}: network error: {exc}")
+        except Exception as exc:  # noqa: BLE001
+            prof = None
+            errors.append(f"{etf}: {exc!r}")
+        if prof and len(prof.get("holdings", [])) >= 2:
+            prof["mult"] = mult
+            profiles[etf] = prof
+            ok += 1
+            if i % 20 == 0 or i == n:
+                _log(progress_cb, f"  [{i}/{n}] {etf}: {len(prof['holdings'])} "
+                                  f"holdings{' ('+str(mult)+'x)' if mult else ''}")
+        else:
+            # Preserve a prior good profile for this ETF on failure.
+            prior = existing_profiles.get(etf)
+            if isinstance(prior, dict) and prior.get("holdings"):
+                prior = dict(prior)
+                prior["mult"] = mult
+                profiles[etf] = prior
+                _log(progress_cb, f"  [{i}/{n}] {etf}: fetch failed — preserving prior")
+            else:
+                _log(progress_cb, f"  [{i}/{n}] {etf}: no data")
+        if pace and i < n:
+            time.sleep(pace)
+
+    _log(progress_cb, f"Done. {ok}/{n} ETFs fetched, {len(profiles)} profiles, "
+                      f"{len(errors)} error(s).")
+    return profiles, errors

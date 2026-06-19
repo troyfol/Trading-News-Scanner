@@ -72,8 +72,8 @@ hiddenimports = (
      'keyring.backends.fail', 'keyring.backends.null',
      # New ETF-map modules. The scraper module is imported lazily from
      # inside the Refresh dialog so PyInstaller's static analysis can
-     # miss it; list both explicitly to be safe.
-     'etf_map', 'etf_scraper']
+     # miss it; list all three explicitly to be safe.
+     'etf_map', 'etf_scraper', 'etf_holdings']
     + collect_submodules('comtypes')
     + collect_submodules('feedparser')
     + collect_submodules('pyarrow')
@@ -96,6 +96,10 @@ a = Analysis(
         # is missing, the indicator falls back to the bundled baseline
         # read-only via _MEIPASS.
         ('single_stock_etfs.json', '.'),
+        # Bundled seed for the multi-holding ETF holdings map (sector /
+        # index / thematic + leveraged-index funds). Same first-launch
+        # copy-out + read-only _MEIPASS fallback as the single-stock seed.
+        ('etf_holdings.json', '.'),
     ] + _gen_files + _mpl_data,
     hiddenimports=hiddenimports,
     hookspath=[],
