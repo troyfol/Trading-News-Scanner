@@ -2,7 +2,7 @@
 
 A real-time news, SEC filing, and earnings scanner for active traders on Windows. Morning Scanner floats above your charting platform, automatically detects which ticker you're viewing, and pulls up relevant news headlines, SEC filing activity, float and short data, earnings proximity, and more — switching automatically as you change symbols.
 
-<img width="617" height="418" alt="watt" src="https://github.com/user-attachments/assets/5d74153f-767f-4926-9c74-376d6b02a908" />
+<img width="1914" height="1023" alt="watt11" src="https://github.com/user-attachments/assets/6042c801-8d6e-4e73-8ba6-6ed83ea2ae65" />
 
 A **single unified script** — [`scan_sec.py`](scan_sec.py) — supports three trading platforms. Switch between them with the **TS / TITAN / TV** radio buttons; the active mode persists across sessions.
 
