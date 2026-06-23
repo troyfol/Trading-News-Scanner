@@ -822,6 +822,68 @@ def test_float_coloration_settings():
         _teardown(app)
 
 
+def test_mcap_gradient_and_float_toggle():
+    """MCap is now the always-on big header label with a 5-tier USD
+    gradient; Float is the toggleable label. Verify the parse + tier
+    mapping, the new attrs/widgets exist, and the render helpers paint
+    the expected text/colors without raising."""
+    _hr("mcap gradient + float toggle")
+    import scan_sec as mod
+    # Pure parse helpers.
+    assert mod._parse_mcap_dollars("1.50B") == 1_500_000_000
+    assert mod._parse_mcap_dollars("850.00M") == 850_000_000
+    assert mod._parse_mcap_dollars("12.3K") == 12_300
+    assert mod._parse_mcap_dollars("2.0T") == 2_000_000_000_000
+    assert mod._parse_mcap_dollars("N/A") is None
+    assert mod._parse_mcap_dollars("") is None
+    assert mod._parse_mcap_dollars(None) is None
+    # Tier boundaries: <250M micro, 250M-2B small, 2B-10B mid,
+    # 10B-200B large, >=200B mega.
+    assert mod._mcap_tier(100_000_000) == "micro"
+    assert mod._mcap_tier(250_000_000) == "small"
+    assert mod._mcap_tier(2_000_000_000) == "mid"
+    assert mod._mcap_tier(10_000_000_000) == "large"
+    assert mod._mcap_tier(200_000_000_000) == "mega"
+    assert mod._mcap_tier(None) is None
+
+    app = _make_app()
+    try:
+        # New widgets + attrs present.
+        assert hasattr(app, "lbl_mcap") and hasattr(app, "chk_float")
+        assert hasattr(app, "var_float")
+        assert app.mcap_gradient_enabled is True
+        assert app.float_color_enabled is True
+        assert set(app.mcap_tier_colors) == set(mod.MCAP_TIER_KEYS)
+        # The old MCap checkbox is gone.
+        assert not hasattr(app, "chk_mcap") and not hasattr(app, "var_mcap")
+
+        # MCap label paints with the mega tier color when gradient on.
+        app.current_meta = {"mcap": "300.0B", "float": "5M", "is_low": True}
+        app._render_mcap_label()
+        assert app.lbl_mcap.cget("text") == "MCap 300.0B"
+        assert app.lbl_mcap.cget("fg").upper() == \
+            mod.MCAP_TIER_DEFAULT_COLORS["mega"].upper()
+        # Gradient off -> theme fg.
+        app.mcap_gradient_enabled = False
+        app._render_mcap_label()
+        assert app.lbl_mcap.cget("fg") == app.colors["FG"]
+
+        # Float hidden when toggle off; shown + low-colored when on.
+        app.var_float.set(False)
+        app._render_float_label()
+        assert app.lbl_float.cget("text") == ""
+        app.var_float.set(True)
+        app._render_float_label()
+        assert app.lbl_float.cget("text") == "Float 5M"
+        # Coloration off -> theme fg even for a low float.
+        app.float_color_enabled = False
+        app._render_float_label()
+        assert app.lbl_float.cget("fg") == app.colors["FG"]
+        print("mcap gradient + float toggle OK")
+    finally:
+        _teardown(app)
+
+
 def test_cik_resolver_close_joins_refresh_thread():
     """CIKResolver.close() must wait briefly for the SEC ticker
     refresh thread before closing the session — otherwise the session
@@ -1104,6 +1166,7 @@ def main():
     test_etf_holdings_map_and_indicator()
     test_etf_swap_resolution_and_badge()
     test_float_coloration_settings()
+    test_mcap_gradient_and_float_toggle()
     test_finviz_ea_synthesizer()
     test_eps_sales_surpr_cell_parser()
     test_finviz_ea_yoy_small_base_floor()

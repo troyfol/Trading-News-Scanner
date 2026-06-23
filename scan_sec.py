@@ -231,6 +231,64 @@ MIN_SEC_INTERVAL = 0.15  # SEC fair-access: 10 req/s cap; stay well under
 LOW_FLOAT_DEFAULT = 20_000_000
 LOW_FLOAT_RANGE_M = (0.1, 100_000.0)  # cutoff entered in MILLIONS of shares
 
+# Market-cap stepped gradient. MCap is always shown in the header (in the
+# large font Float used to occupy); when the gradient is enabled it's
+# painted with one of five tier colors keyed by USD market cap. The ramp
+# runs bright-red (micro) -> bright-green (mega) with a very-light-green
+# midpoint. All five colors + the on/off toggle are user-tunable via the
+# Settings dialog. Tier boundaries (USD):
+#   micro  < 250M | small 250M-2B | mid 2B-10B | large 10B-200B | mega >=200B
+MCAP_TIER_BOUNDS = (250_000_000, 2_000_000_000,
+                    10_000_000_000, 200_000_000_000)
+MCAP_TIER_KEYS = ("micro", "small", "mid", "large", "mega")
+MCAP_TIER_DEFAULT_COLORS = {
+    "micro": "#FF2B2B",  # bright red
+    "small": "#FF9030",  # orange
+    "mid":   "#CFF5C8",  # very light green
+    "large": "#5FD35F",  # medium green
+    "mega":  "#00C400",  # bright green
+}
+MCAP_TIER_LABELS = {
+    "micro": "Micro (<$250M)",
+    "small": "Small ($250M-$2B)",
+    "mid":   "Mid ($2B-$10B)",
+    "large": "Large ($10B-$200B)",
+    "mega":  "Mega ($200B+)",
+}
+
+
+def _parse_mcap_dollars(text):
+    """Parse a finviz-style market-cap string ('1.50B', '850.00M',
+    '12.3K', '1.2T') into a float number of US dollars, or None if it
+    can't be parsed."""
+    if not text:
+        return None
+    clean = str(text).strip().upper().replace("$", "").replace(",", "")
+    if not clean:
+        return None
+    mult = 1.0
+    if clean.endswith("T"): mult, clean = 1_000_000_000_000, clean[:-1]
+    elif clean.endswith("B"): mult, clean = 1_000_000_000, clean[:-1]
+    elif clean.endswith("M"): mult, clean = 1_000_000, clean[:-1]
+    elif clean.endswith("K"): mult, clean = 1_000, clean[:-1]
+    try:
+        return float(clean) * mult
+    except (ValueError, TypeError):
+        return None
+
+
+def _mcap_tier(dollars):
+    """Return the tier key ('micro'..'mega') for a USD market cap, or
+    None if ``dollars`` is None."""
+    if dollars is None:
+        return None
+    b_micro, b_small, b_mid, b_large = MCAP_TIER_BOUNDS
+    if dollars < b_micro: return "micro"
+    if dollars < b_small: return "small"
+    if dollars < b_mid: return "mid"
+    if dollars < b_large: return "large"
+    return "mega"
+
 # Default location of the earnings-history parquet produced by an
 # upstream earnings pipeline. It carries `yoy_eps_pct` + `yoy_rev_pct`
 # columns the Historical Lookup uses for 10-Q YoY enrichment. The file
@@ -2895,9 +2953,16 @@ class ScannerApp(tk.Tk):
 
         self.lbl_symbol = tk.Label(self.header_top, text="—", bg=self.colors["BG"], fg=self.colors["FG"])
         self.lbl_symbol.pack(side="left", anchor="sw")
-        
+
+        # MCap: always shown, large font (the slot Float used to hold),
+        # optionally painted with the 5-tier stepped gradient.
+        self.lbl_mcap = tk.Label(self.header_top, text="", bg=self.colors["BG"], fg=self.colors["FG"])
+        self.lbl_mcap.pack(side="left", padx=(15, 5), anchor="sw", pady=(0, 4))
+
+        # Float: toggleable (control-row checkbox), default (smaller) font,
+        # optional low/high coloration.
         self.lbl_float = tk.Label(self.header_top, text="", bg=self.colors["BG"], fg=self.colors["TXT_OK"])
-        self.lbl_float.pack(side="left", padx=(15, 5), anchor="sw", pady=(0, 4))
+        self.lbl_float.pack(side="left", padx=(0, 5), anchor="sw", pady=(0, 4))
 
         self.lbl_sec_recent = tk.Label(self.header_top, text="SEC: —", bg=self.colors["BG"], fg=self.colors["FG"])
         self.lbl_sec_recent.pack(side="left", padx=5, anchor="sw", pady=(0, 4))
@@ -3164,9 +3229,9 @@ class ScannerApp(tk.Tk):
         self.chk_all = tk.Checkbutton(self.ctrl, text="All", variable=self.var_all, command=self.refresh_ui)
         self.chk_all.pack(side="left", padx=(5,0))
         
-        self.var_mcap = tk.BooleanVar(value=False)
-        self.chk_mcap = tk.Checkbutton(self.ctrl, text="MCap", variable=self.var_mcap, command=self.refresh_meta_label)
-        self.chk_mcap.pack(side="left", padx=(5,0))
+        self.var_float = tk.BooleanVar(value=False)
+        self.chk_float = tk.Checkbutton(self.ctrl, text="Float", variable=self.var_float, command=self._render_float_label)
+        self.chk_float.pack(side="left", padx=(5,0))
         
         self.var_rvol = tk.BooleanVar(value=False)
         self.chk_rvol = tk.Checkbutton(self.ctrl, text="Rel Vol", variable=self.var_rvol, command=self.refresh_meta_label)
@@ -3257,7 +3322,7 @@ class ScannerApp(tk.Tk):
         self.var_earnings.set(self._pending_show_earnings)
         self.var_48.set(self._pending_show_48)
         self.var_all.set(self._pending_show_all)
-        self.var_mcap.set(self._pending_show_mcap)
+        self.var_float.set(self._pending_show_float)
         self.var_rvol.set(self._pending_show_rvol)
         # Push loaded Finviz throttle into the live fetcher.
         self.fetcher.finviz_min_interval = self._pending_finviz_min_interval
@@ -3266,6 +3331,12 @@ class ScannerApp(tk.Tk):
         self.fetcher.float_low_threshold = self._pending_float_low_threshold
         self.float_low_color = self._pending_float_low_color
         self.float_high_color = self._pending_float_high_color
+        # Float coloration on/off (Settings dialog) — when off, Float
+        # renders in the theme's default fg instead of low/high colors.
+        self.float_color_enabled = self._pending_float_color_enabled
+        # Market-cap stepped gradient: on/off + the five tier colors.
+        self.mcap_gradient_enabled = self._pending_mcap_gradient_enabled
+        self.mcap_tier_colors = dict(self._pending_mcap_tier_colors)
         # Earnings live attrs — read by refresh_meta_label.
         self.earn_past_days = self._pending_earn_past_days
         self.earn_future_days = self._pending_earn_future_days
@@ -3720,8 +3791,37 @@ class ScannerApp(tk.Tk):
             26, "High color (#hex)", getattr(self, "float_high_color", "") or "",
             c["TXT_BAD"], "  blank = theme red")
 
+        dlg_cb_conf = {"bg": c["BG"], "fg": c["FG"], "selectcolor": c["BG"],
+                       "activebackground": c["BG"], "activeforeground": c["FG"]}
+        var_float_color_en = tk.BooleanVar(
+            value=bool(getattr(self, "float_color_enabled", True)))
+        tk.Checkbutton(
+            wrap, text="Color the Float value (low/high)",
+            variable=var_float_color_en, font=std, **dlg_cb_conf,
+        ).grid(row=27, column=0, columnspan=3, sticky="w", padx=(12, 0))
+
+        # ----- Market Cap gradient section -----
+        tk.Label(wrap, text="Market Cap", font=std_bold, **lbl_conf).grid(
+            row=28, column=0, sticky="w", pady=(12, 4),
+        )
+        var_mcap_grad_en = tk.BooleanVar(
+            value=bool(getattr(self, "mcap_gradient_enabled", True)))
+        tk.Checkbutton(
+            wrap, text="Color MCap by tier (stepped gradient)",
+            variable=var_mcap_grad_en, font=std, **dlg_cb_conf,
+        ).grid(row=29, column=0, columnspan=3, sticky="w", padx=(12, 0))
+
+        stored_tiers = getattr(self, "mcap_tier_colors", None) or MCAP_TIER_DEFAULT_COLORS
+        var_mcap_tiers = {}
+        for i, tier in enumerate(MCAP_TIER_KEYS):
+            var_mcap_tiers[tier] = make_float_color_row(
+                30 + i, f"{MCAP_TIER_LABELS[tier]} (#hex)",
+                stored_tiers.get(tier, MCAP_TIER_DEFAULT_COLORS[tier]),
+                MCAP_TIER_DEFAULT_COLORS[tier],
+                f"  blank = default {MCAP_TIER_DEFAULT_COLORS[tier]}")
+
         err_lbl = tk.Label(wrap, text="", bg=c["BG"], fg=c["TXT_BAD"], font=std)
-        err_lbl.grid(row=27, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        err_lbl.grid(row=35, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
         def save_and_close():
             # Validate SEC contact (blank is allowed = placeholder/env fallback)
@@ -3754,6 +3854,15 @@ class ScannerApp(tk.Tk):
                 if cval and not self._is_valid_hex_color(cval):
                     err_lbl.config(text=f"{lbl_name} color must be #RRGGBB (or blank)")
                     return
+            # MCap tier colors — blank reverts to that tier's default.
+            mcap_tiers_resolved = {}
+            for tier in MCAP_TIER_KEYS:
+                tval = var_mcap_tiers[tier].get().strip()
+                if tval and not self._is_valid_hex_color(tval):
+                    err_lbl.config(
+                        text=f"{MCAP_TIER_LABELS[tier]} color must be #RRGGBB (or blank)")
+                    return
+                mcap_tiers_resolved[tier] = tval or MCAP_TIER_DEFAULT_COLORS[tier]
             # Validate windows
             try:
                 past_d = int(var_past.get().strip())
@@ -3780,6 +3889,9 @@ class ScannerApp(tk.Tk):
             self.fetcher.float_low_threshold = float_cut_m * 1_000_000
             self.float_low_color = float_low_val
             self.float_high_color = float_high_val
+            self.float_color_enabled = bool(var_float_color_en.get())
+            self.mcap_gradient_enabled = bool(var_mcap_grad_en.get())
+            self.mcap_tier_colors = mcap_tiers_resolved
             self.earn_past_days = past_d
             self.earn_future_days = future_d
             self.earn_future_color = color_future
@@ -3840,17 +3952,17 @@ class ScannerApp(tk.Tk):
             # immediately without waiting for the next refresh.
             try: self.refresh_meta_label()
             except Exception: pass
-            # Re-render the float label live with the new cutoff + colors
-            # (it's painted in scrape_sec_data, not refresh_meta_label, so
-            # recompute is_low for the current symbol here).
+            # Re-render the MCap + Float header labels live with the new
+            # cutoff / colors / toggles (they're painted in scrape_sec_data,
+            # not refresh_meta_label, so recompute is_low for the current
+            # symbol and repaint both here).
             try:
                 m = self.current_meta or {}
                 if m.get("float"):
                     _, is_low = self.fetcher.parse_float(m["float"])
                     m["is_low"] = is_low
-                    col = ((self.float_low_color or self.colors["TXT_OK"]) if is_low
-                           else (self.float_high_color or self.colors["TXT_BAD"]))
-                    self.lbl_float.config(text=f"Float {m['float']}", fg=col)
+                self._render_mcap_label()
+                self._render_float_label()
             except Exception:
                 pass
             # Persist the dialog's settings to disk NOW (not just in
@@ -3861,6 +3973,9 @@ class ScannerApp(tk.Tk):
                 "float_low_threshold": float(self.fetcher.float_low_threshold),
                 "float_low_color": str(getattr(self, "float_low_color", "") or ""),
                 "float_high_color": str(getattr(self, "float_high_color", "") or ""),
+                "float_color_enabled": bool(self.float_color_enabled),
+                "mcap_gradient_enabled": bool(self.mcap_gradient_enabled),
+                "mcap_tier_colors": {k: str(v) for k, v in self.mcap_tier_colors.items()},
                 "earn_past_days": int(self.earn_past_days),
                 "earn_future_days": int(self.earn_future_days),
                 "earn_future_color": str(self.earn_future_color),
@@ -3878,7 +3993,7 @@ class ScannerApp(tk.Tk):
             dlg.destroy()
 
         btn_row = tk.Frame(wrap, bg=c["BG"])
-        btn_row.grid(row=28, column=0, columnspan=4, sticky="e", pady=(12, 0))
+        btn_row.grid(row=36, column=0, columnspan=4, sticky="e", pady=(12, 0))
         tk.Button(btn_row, text="Cancel", command=dlg.destroy, font=std, **btn_conf).pack(
             side="right", padx=(6, 0),
         )
@@ -3930,6 +4045,7 @@ class ScannerApp(tk.Tk):
         self.lbl_name.config(bg=c["BG"], fg=c["VIOLET"])
         self.lbl_shelf.config(bg=c["BG"])
         self.lbl_sec_recent.config(bg=c["BG"])
+        self.lbl_mcap.config(bg=c["BG"])
         self.lbl_float.config(bg=c["BG"])
         # Refresh the ETF indicator under the new palette — color depends on
         # current state, so re-derive it rather than picking a single color.
@@ -3952,9 +4068,12 @@ class ScannerApp(tk.Tk):
         cb_conf = {"bg": c["BG"], "fg": c["FG"], "selectcolor": c["BG"], "activebackground": c["BG"]}
         self.chk_48.config(**cb_conf)
         self.chk_all.config(**cb_conf)
-        self.chk_mcap.config(**cb_conf)
+        self.chk_float.config(**cb_conf)
         self.chk_rvol.config(**cb_conf)
         self.chk_earnings.config(**cb_conf)
+        # Re-derive the MCap gradient + Float colors under the new palette.
+        self._render_mcap_label()
+        self._render_float_label()
         
         self.lbl_highlight_new.config(bg=c["BG"], fg=c["TXT_OK"])
         self.lbl_highlight_old.config(bg=c["BG"], fg=c["TXT_BAD"])
@@ -4016,7 +4135,8 @@ class ScannerApp(tk.Tk):
         self.lbl_name.config(font=("Segoe UI", max(6, s+1)))
         self.lbl_shelf.config(font=("Segoe UI", s+2, "bold"))
         self.lbl_sec_recent.config(font=("Segoe UI", s+2, "bold"))
-        self.lbl_float.config(font=("Segoe UI", s+4, "bold"))
+        self.lbl_mcap.config(font=("Segoe UI", s+4, "bold"))
+        self.lbl_float.config(font=("Segoe UI", s+2))
         if hasattr(self, "lbl_etf"):
             self.lbl_etf.config(font=("Segoe UI", s+2, "bold"))
         if hasattr(self, "lbl_etf_hold"):
@@ -4032,7 +4152,7 @@ class ScannerApp(tk.Tk):
         std = ("Segoe UI", s)
         std_bold = ("Segoe UI", s, "bold")
         self.chk_48.config(font=std); self.chk_all.config(font=std)
-        self.chk_mcap.config(font=std); self.chk_rvol.config(font=std); self.chk_earnings.config(font=std)
+        self.chk_float.config(font=std); self.chk_rvol.config(font=std); self.chk_earnings.config(font=std)
         self.lbl_highlight_new.config(font=std_bold); self.lbl_highlight_old.config(font=std_bold)
         self.entry_hot_new.config(font=std); self.entry_hot_old.config(font=std)
         self.btn_apply_new.config(font=std); self.btn_apply_old.config(font=std)
@@ -4165,6 +4285,7 @@ class ScannerApp(tk.Tk):
         self.lbl_shelf.config(text="Shelf: —", fg=self.colors["CREDIT"])
         self.lbl_sec_recent.config(text="SEC: —", fg=self.colors["FG"])
         self._update_etf_label(sym)
+        self.lbl_mcap.config(text="")
         self.lbl_float.config(text="")
         self.lbl_meta.config(text="Loading...")
         self.lbl_earnings.config(text="")
@@ -4375,15 +4496,11 @@ class ScannerApp(tk.Tk):
         self.current_items = merged
         self.current_meta = meta
 
-        if meta.get("float"):
-            # User-tunable float colors; "" falls back to the theme's
-            # green/red so the default look is unchanged.
-            if meta['is_low']:
-                fg_col = getattr(self, "float_low_color", "") or self.colors["TXT_OK"]
-            else:
-                fg_col = getattr(self, "float_high_color", "") or self.colors["TXT_BAD"]
-            self.lbl_float.config(text=f"Float {meta['float']}", fg=fg_col)
-        
+        # MCap (always on, large font, optional gradient) + Float
+        # (toggleable, optional low/high coloration) header labels.
+        self._render_mcap_label()
+        self._render_float_label()
+
         self.refresh_meta_label()
         self.refresh_ui()
         self._set_last_refreshed_now()
@@ -7076,6 +7193,45 @@ class ScannerApp(tk.Tk):
         # poisoned value can't propagate into a chart axis or label.
         return v if math.isfinite(v) else None
 
+    def _render_mcap_label(self):
+        """Paint the always-on MCap header label (large font). When the
+        stepped gradient is enabled, color it by the symbol's USD market
+        cap tier; otherwise use the theme's default fg."""
+        if not hasattr(self, "lbl_mcap"):
+            return
+        meta = getattr(self, "current_meta", None) or {}
+        mcap = meta.get("mcap")
+        if not mcap:
+            self.lbl_mcap.config(text="")
+            return
+        col = self.colors["FG"]
+        if getattr(self, "mcap_gradient_enabled", True):
+            tier = _mcap_tier(_parse_mcap_dollars(mcap))
+            if tier:
+                tier_colors = getattr(self, "mcap_tier_colors", None) or {}
+                col = tier_colors.get(tier) or MCAP_TIER_DEFAULT_COLORS[tier]
+        self.lbl_mcap.config(text=f"MCap {mcap}", fg=col)
+
+    def _render_float_label(self):
+        """Paint the toggleable Float header label (default font). Hidden
+        unless the control-row Float checkbox is on; colored low/high only
+        when Float coloration is enabled in Settings."""
+        if not hasattr(self, "lbl_float"):
+            return
+        meta = getattr(self, "current_meta", None) or {}
+        flt = meta.get("float")
+        if not (self.var_float.get() and flt):
+            self.lbl_float.config(text="")
+            return
+        if getattr(self, "float_color_enabled", True):
+            if meta.get("is_low"):
+                col = getattr(self, "float_low_color", "") or self.colors["TXT_OK"]
+            else:
+                col = getattr(self, "float_high_color", "") or self.colors["TXT_BAD"]
+        else:
+            col = self.colors["FG"]
+        self.lbl_float.config(text=f"Float {flt}", fg=col)
+
     def refresh_meta_label(self):
         # Invalidate any in-flight async YoY backfill (finviz ty=ea OR
         # XBRL) armed by a PRIOR paint: this repaint may have flipped the
@@ -7095,7 +7251,6 @@ class ScannerApp(tk.Tk):
         m_txt = []
         meta = self.current_meta
         if meta.get("short"): m_txt.append(f"Short {meta['short']}")
-        if self.var_mcap.get() and meta.get("mcap"): m_txt.append(f"MCap {meta['mcap']}")
         if self.var_rvol.get() and meta.get("rvol"): m_txt.append(f"RVol {meta['rvol']}")
         if meta.get("sector"): m_txt.append(f"{meta['sector']}")
         if meta.get("country"): m_txt.append(f"{meta['country']}")
@@ -9167,7 +9322,7 @@ class ScannerApp(tk.Tk):
         self._pending_show_earnings = False
         self._pending_show_48 = False
         self._pending_show_all = False
-        self._pending_show_mcap = False
+        self._pending_show_float = False
         self._pending_show_rvol = False
         self._pending_hot_words_new = ""
         self._pending_hot_words_old = ""
@@ -9180,6 +9335,12 @@ class ScannerApp(tk.Tk):
         self._pending_float_low_threshold: float = LOW_FLOAT_DEFAULT
         self._pending_float_low_color: str = ""
         self._pending_float_high_color: str = ""
+        # Float coloration on/off (default on = prior low/high behavior).
+        self._pending_float_color_enabled: bool = True
+        # Market-cap stepped gradient: on/off (default on) + five tier
+        # colors (default to the bright-red->bright-green ramp).
+        self._pending_mcap_gradient_enabled: bool = True
+        self._pending_mcap_tier_colors: dict = dict(MCAP_TIER_DEFAULT_COLORS)
         self._pending_search_visible: bool = False
         self._pending_search_kw: str = ""
         self._pending_search_date: str = ""
@@ -9263,7 +9424,7 @@ class ScannerApp(tk.Tk):
             self._pending_show_earnings = data.get("show_earnings", False)
             self._pending_show_48 = data.get("show_48", False)
             self._pending_show_all = data.get("show_all", False)
-            self._pending_show_mcap = data.get("show_mcap", False)
+            self._pending_show_float = data.get("show_float", False)
             self._pending_show_rvol = data.get("show_rvol", False)
             # Back-compat: old settings had one "hot_words" field.
             legacy = data.get("hot_words", "")
@@ -9294,6 +9455,18 @@ class ScannerApp(tk.Tk):
                 # "" is valid (= follow theme); otherwise must be #RRGGBB.
                 if isinstance(v, str) and (v == "" or self._is_valid_hex_color(v)):
                     setattr(self, attr, v)
+            # Float coloration on/off.
+            if isinstance(data.get("float_color_enabled"), bool):
+                self._pending_float_color_enabled = data["float_color_enabled"]
+            # Market-cap gradient on/off + per-tier colors.
+            if isinstance(data.get("mcap_gradient_enabled"), bool):
+                self._pending_mcap_gradient_enabled = data["mcap_gradient_enabled"]
+            mtc = data.get("mcap_tier_colors")
+            if isinstance(mtc, dict):
+                for tier in MCAP_TIER_KEYS:
+                    v = mtc.get(tier)
+                    if isinstance(v, str) and self._is_valid_hex_color(v):
+                        self._pending_mcap_tier_colors[tier] = v
             self._pending_search_visible = bool(data.get("search_visible", False))
             self._pending_search_kw = data.get("search_kw", "") or ""
             self._pending_search_date = data.get("search_date", "") or ""
@@ -9405,7 +9578,7 @@ class ScannerApp(tk.Tk):
                 "show_earnings": self.var_earnings.get(),
                 "show_48": self.var_48.get(),
                 "show_all": self.var_all.get(),
-                "show_mcap": self.var_mcap.get(),
+                "show_float": self.var_float.get(),
                 "show_rvol": self.var_rvol.get(),
                 "hot_words_new": self.entry_hot_new.get(),
                 "hot_words_old": self.entry_hot_old.get(),
@@ -9415,6 +9588,13 @@ class ScannerApp(tk.Tk):
                 "float_low_threshold": float(self.fetcher.float_low_threshold),
                 "float_low_color": str(getattr(self, "float_low_color", "") or ""),
                 "float_high_color": str(getattr(self, "float_high_color", "") or ""),
+                "float_color_enabled": bool(getattr(self, "float_color_enabled", True)),
+                "mcap_gradient_enabled": bool(getattr(self, "mcap_gradient_enabled", True)),
+                "mcap_tier_colors": {
+                    k: str(v) for k, v in
+                    (getattr(self, "mcap_tier_colors", None) or
+                     MCAP_TIER_DEFAULT_COLORS).items()
+                },
                 "search_visible": bool(self.search_visible.get()),
                 "search_kw": self.entry_search_kw.get(),
                 "search_date": self.entry_search_date.get(),

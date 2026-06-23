@@ -24,7 +24,8 @@ The window watcher runs on a dedicated daemon thread with a stall watchdog, so a
   - **Recency indicator** — color-coded by whether the company filed anything in the last 24 h (hot), 48 h (warm), or longer (cold). Click to open EDGAR.
   - **Shelf registration** — flags active S-3 filings. Click to view on EDGAR.
 - **CIK resolution** — maps tickers to SEC CIK numbers via the official `sec.gov/files/company_tickers.json` endpoint with fuzzy name-matching fallback; cached locally.
-- **Float & short data** — shares float (colored by a low-float cutoff) and short-float percentage from Finviz. The cutoff and the low/high colors are tunable in **Settings → Float**.
+- **Market cap** — always shown in the header in a large font, optionally colored by a 5-tier stepped gradient (micro / small / mid / large / mega, bright-red → bright-green). The gradient toggle and all five tier colors are tunable in **Settings → Market Cap**.
+- **Float & short data** — shares float (toggleable via the **Float** checkbox, optionally colored by a low-float cutoff) and short-float percentage from Finviz. The cutoff, the low/high colors, and the coloration on/off toggle are tunable in **Settings → Float**.
 - **Earnings row** — earnings date, EPS surprise, sales surprise, and EPS / revenue YoY on a dedicated togglable row, color-coded by proximity, with a future-date suppression safeguard.
 - **Earnings chart** — double-click any earnings label to open a per-quarter chart (YoY % and Surprise % bars on outlier-robust axes, click-to-highlight a quarter, live color editor). Reads an optional earnings-history parquet you supply (see [Optional earnings data](#optional-earnings-data)).
 - **Historical Lookup** — surfaces news and SEC EDGAR filings around any date for the active symbol, with async one-line summaries for filing rows. News enrichment can optionally use Polygon (see [API keys](#api-keys--privacy)).
@@ -61,7 +62,8 @@ The default **TS** and **TV** modes need only `pywin32`. The **TITAN** mode addi
 | Control | Action |
 | --- | --- |
 | **48h** / **All** checkboxes | Widen the news window to the last 48 hours / show all cached headlines |
-| **MCap** / **Rel Vol** checkboxes | Show market cap / relative volume in the metadata bar |
+| **Float** checkbox | Show the shares-float value in the header (market cap is always shown) |
+| **Rel Vol** checkbox | Show relative volume in the metadata bar |
 | **Earnings** checkbox | Show the earnings row (date, EPS / sales surprise, YoY) |
 | **Highlight** field | Comma-separated keywords to highlight in the news table |
 | **+** / **−** buttons | Increase / decrease font size |
