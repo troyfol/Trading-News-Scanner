@@ -675,33 +675,40 @@ class RSSWorker:
         fallback_iso = now_dt.date().isoformat()
         fallback_t = now_dt.strftime("%I:%M%p")
         for entry in parsed.entries:
-            title = (entry.get("title") or "").strip()
-            if not title:
-                continue
-            title = html.unescape(title)
-            link = html.unescape((entry.get("link") or "").strip())
-            # feedparser surfaces a parsed time tuple as ``published_parsed``
-            # (or ``updated_parsed``). When present, it represents the
-            # publisher's pubDate — exactly what we want.
-            t_struct = entry.get("published_parsed") or entry.get("updated_parsed")
-            if t_struct:
-                try:
-                    # feedparser normalizes published_parsed to UTC; build
-                    # a UTC-aware datetime and convert to ET so it matches
-                    # the cutoff/today_iso basis.
-                    pub_dt = datetime(*t_struct[:6], tzinfo=timezone.utc)
-                    if _ET_TZ is not None:
-                        pub_dt = pub_dt.astimezone(_ET_TZ)
-                    date_iso = pub_dt.date().isoformat()
-                    time_str = pub_dt.strftime("%I:%M%p")
-                except (ValueError, TypeError):
+            # One malformed entry must not sink the whole feed. Before this
+            # guard an unexpected error here escaped _fetch_one entirely,
+            # and fetch_feeds could not attribute it to a wire, so that
+            # feed's status stayed frozen at its previous value.
+            try:
+                title = (entry.get("title") or "").strip()
+                if not title:
+                    continue
+                title = html.unescape(title)
+                link = html.unescape((entry.get("link") or "").strip())
+                # feedparser surfaces a parsed time tuple as ``published_parsed``
+                # (or ``updated_parsed``). When present, it represents the
+                # publisher's pubDate — exactly what we want.
+                t_struct = entry.get("published_parsed") or entry.get("updated_parsed")
+                if t_struct:
+                    try:
+                        # feedparser normalizes published_parsed to UTC; build
+                        # a UTC-aware datetime and convert to ET so it matches
+                        # the cutoff/today_iso basis.
+                        pub_dt = datetime(*t_struct[:6], tzinfo=timezone.utc)
+                        if _ET_TZ is not None:
+                            pub_dt = pub_dt.astimezone(_ET_TZ)
+                        date_iso = pub_dt.date().isoformat()
+                        time_str = pub_dt.strftime("%I:%M%p")
+                    except (ValueError, TypeError):
+                        date_iso, time_str = fallback_iso, fallback_t
+                else:
                     date_iso, time_str = fallback_iso, fallback_t
-            else:
-                date_iso, time_str = fallback_iso, fallback_t
-            out.append({
-                "source": source, "headline": title, "url": link,
-                "time": time_str, "date": date_iso, "tickers": [],
-            })
+                out.append({
+                    "source": source, "headline": title, "url": link,
+                    "time": time_str, "date": date_iso, "tickers": [],
+                })
+            except Exception:
+                continue
         return code, "OK", out
 
     def _apply_status(self, code, status):
@@ -719,7 +726,15 @@ class RSSWorker:
         if streak >= self.FAIL_STREAK_TO_ERR:
             self.statuses[code] = "ERR"
 
-    def fetch_feeds(self):
+    def fetch_feeds(self, report_dedupe=False):
+        """Pull all wires. Returns the merged item list, or
+        ``(items, was_deduped)`` when ``report_dedupe`` is set.
+
+        ``was_deduped`` is True when the call was served from the
+        MIN_FETCH_INTERVAL window: the origins were NOT contacted and
+        ``self.statuses`` was NOT updated. The manual-refresh path uses
+        it to say so, rather than silently doing nothing while stamping a
+        fresh "Last Refreshed" time."""
         # Three feeds run in parallel — they're independent network calls
         # bottlenecked on origin latency, not CPU.
         # Dedupe between near-simultaneous callers (60s loop + manual
@@ -728,22 +743,35 @@ class RSSWorker:
         with self._fetch_lock:
             now_t = time.time()
             if now_t - self._last_fetch_at < self.MIN_FETCH_INTERVAL:
-                return list(self._last_fetch_items)
+                cached = list(self._last_fetch_items)
+                # Flag travels with the return value, so it can't be
+                # clobbered by the 60s loop racing the manual caller.
+                return (cached, True) if report_dedupe else cached
             self._last_fetch_at = now_t
 
         items = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(self.feeds)) as ex:
-            futures = [ex.submit(self._fetch_one, code, url) for code, url in self.feeds]
-            for fut in concurrent.futures.as_completed(futures):
+            # Map future -> feed code so a worker that raises can still be
+            # attributed. Previously this was a bare list: an exception out
+            # of _fetch_one was skipped without touching statuses, leaving
+            # that wire frozen at its old value (a broken feed could keep
+            # reading green).
+            future_to_code = {ex.submit(self._fetch_one, code, url): code
+                              for code, url in self.feeds}
+            for fut in concurrent.futures.as_completed(future_to_code):
+                code = future_to_code[fut]
                 try:
-                    code, status, feed_items = fut.result()
-                except Exception:
+                    _code, status, feed_items = fut.result()
+                except Exception as exc:
+                    _log.warning("RSS %s: worker crashed (%s)",
+                                 code, type(exc).__name__)
+                    self._apply_status(code, "ERR")
                     continue
                 self._apply_status(code, status)
                 items.extend(feed_items)
         with self._fetch_lock:
             self._last_fetch_items = list(items)
-        return items
+        return (items, False) if report_dedupe else items
 
     def merge_into_cache(self, new_items):
         """Atomic read-modify-write of the wires cache. Both the 60s
@@ -4448,9 +4476,14 @@ class ScannerApp(tk.Tk):
         # 1. One-shot RSS pull. Both the merge and the within-window
         # dedupe live inside the worker (C3 + E7), so we just call the
         # high-level helpers — no risk of clobbering the 60s loop.
+        # ``wires_cached`` = the pull landed inside the worker's dedupe
+        # window, so the wires were NOT re-pulled (the Finviz/SEC scrape
+        # below still runs). Surfaced on the Last Refreshed label so the
+        # button doesn't look like it did nothing.
+        wires_cached = False
         try:
             rw = self.fetcher.rss_worker
-            new_items = rw.fetch_feeds()
+            new_items, wires_cached = rw.fetch_feeds(report_dedupe=True)
             rw.merge_into_cache(new_items)
         except Exception as exc:
             _log.debug("manual refresh RSS pull failed: %s", type(exc).__name__)
@@ -4482,26 +4515,32 @@ class ScannerApp(tk.Tk):
             0,
             lambda: self._finish_manual_refresh(
                 sym, meta, fv_items, has_s3, sec_recent_status, recent_earnings,
+                wires_cached,
             ),
         )
 
-    def _finish_manual_refresh(self, sym, meta, fv_items, has_s3, sec_recent_status, recent_earnings):
+    def _finish_manual_refresh(self, sym, meta, fv_items, has_s3, sec_recent_status,
+                               recent_earnings, wires_cached=False):
         if sym and sym == self.current_symbol:
             self.update_full_data(sym, meta, fv_items, has_s3, sec_recent_status, recent_earnings)
         elif not sym:
             # No active symbol — just refresh the wires list from cache.
             self.current_items = self.fetcher.get_wires(sym) if sym else self.current_items
             self.refresh_ui()
-        self._set_last_refreshed_now()
+        self._set_last_refreshed_now(wires_cached=wires_cached)
         self.btn_refresh.config(state="normal", text="↻")
 
-    def _set_last_refreshed_now(self):
+    def _set_last_refreshed_now(self, wires_cached=False):
         if _ET_TZ is not None:
             now_et = datetime.now(_ET_TZ)
         else:
             now_et = datetime.now()
+        # A refresh inside the worker's dedupe window re-scraped the
+        # symbol but reused the cached wires. Say so rather than implying
+        # everything on screen is freshly pulled.
+        suffix = "  (wires cached)" if wires_cached else ""
         self.lbl_last_refresh.config(
-            text=f"Last Refreshed: {now_et.strftime('%H:%M:%S')} ET"
+            text=f"Last Refreshed: {now_et.strftime('%H:%M:%S')} ET{suffix}"
         )
 
     def update_full_data(self, sym, meta, fv_items, has_s3, sec_recent_status,
