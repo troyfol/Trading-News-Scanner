@@ -5561,11 +5561,16 @@ class ScannerApp(tk.Tk):
         finviz_earn_str = (self.current_meta or {}).get("earnings", "") or ""
         finviz_date = self.fetcher.parse_earnings_date(finviz_earn_str) \
             if finviz_earn_str else None
-        today_ts = pd.Timestamp.now().normalize()
-        next_e = (pd.Timestamp(finviz_date)
-                  if (finviz_date is not None
-                      and pd.Timestamp(finviz_date) > today_ts)
-                  else None)
+        # Pass the Finviz earnings date to the chart even when it is
+        # today / just-reported (not only strictly-future). The chart's
+        # _expand_with_gaps draws the marker only when this date is newer
+        # than the latest reported quarter, so a same-day report (e.g.
+        # "Jul 20 BMO" this morning, before the surprise lands in any
+        # feed) still gets a marker + pending "??" placeholder — parity
+        # with the landing row, and self-healing once a feed adds the
+        # quarter. Upcoming vs. just-reported wording is chosen at the
+        # marker label (see _render_earnings_chart_window_impl).
+        next_e = pd.Timestamp(finviz_date) if finviz_date is not None else None
         # BMO = Before Market Open, AMC = After Market Close,
         # AH = After Hours. Preserved verbatim from the raw Finviz
         # cell and surfaced next to the marker label on the chart.
@@ -6720,13 +6725,22 @@ class ScannerApp(tk.Tk):
                     if next_earnings is not None else ""
                 if ne_label and next_earnings_when:
                     ne_label = f"{ne_label} ({next_earnings_when})"
+                # "reported:" once the marked quarter has already been
+                # announced (date <= today, surprise not yet in a feed);
+                # "next:" for a genuinely upcoming announcement.
+                _mk_prefix = (
+                    "reported" if (next_earnings is not None
+                                   and pd.Timestamp(next_earnings)
+                                   <= pd.Timestamp.now().normalize())
+                    else "next"
+                )
                 for ax in (ax_eps, ax_rev):
                     ax.axvline(future_idx, color="#FFE600", linewidth=1.0,
                                linestyle="--", alpha=0.85)
                 if ne_label:
                     ax_eps.text(
                         future_idx, ax_eps.get_ylim()[1] * 0.96,
-                        f"  next: {ne_label}", color="#FFE600",
+                        f"  {_mk_prefix}: {ne_label}", color="#FFE600",
                         fontsize=9, va="top", ha="left",
                     )
             except Exception:
