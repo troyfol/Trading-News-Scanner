@@ -219,6 +219,15 @@ BROWSER_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
     "Referer": "https://finviz.com"
 }
+# RSS wire feeds get their own headers. The Finviz Referer above is
+# meaningless to prnewswire/globenewswire/yahoo and measurably worsens
+# PRNewswire's bot-filtering (it answers a fraction of requests with a
+# 404 HTML page instead of the feed). Declaring an RSS Accept also nudges
+# origins to serve XML rather than a browser landing page.
+WIRE_HEADERS = {
+    "User-Agent": BROWSER_HEADERS["User-Agent"],
+    "Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.8",
+}
 MIN_SCRAPE_INTERVAL = 1.0  # default; user-tunable via Settings dialog
 MIN_SCRAPE_INTERVAL_RANGE = (0.1, 10.0)
 MIN_SEC_INTERVAL = 0.15  # SEC fair-access: 10 req/s cap; stay well under
@@ -579,6 +588,16 @@ class RSSWorker:
     # gate keeps two near-simultaneous fires from re-pulling the same
     # remote feeds (E7).
     MIN_FETCH_INTERVAL = 20.0
+    # Wire origins (PRNewswire especially) bot-filter a fraction of
+    # requests, answering 404/301 with an HTML page instead of the feed.
+    # Those failures are independent, so a couple of quick retries take
+    # the effective success rate back to ~100%.
+    WIRE_ATTEMPTS = 3
+    WIRE_RETRY_BACKOFF = 0.6  # seconds between attempts
+    # Consecutive failed cycles before a wire indicator turns red. One
+    # transient miss (already rare once retries are in) shouldn't flash
+    # the indicator red for a whole 60s cycle.
+    FAIL_STREAK_TO_ERR = 2
 
     def __init__(self):
         self.running = False
@@ -588,6 +607,9 @@ class RSSWorker:
             ("YH", "https://finance.yahoo.com/news/rssindex")
         ]
         self.statuses = {code: None for code, url in self.feeds}
+        # Consecutive-failure count per feed, driving the ERR hysteresis
+        # in ``_apply_status``. Any success resets it immediately.
+        self._fail_streaks = {code: 0 for code, url in self.feeds}
         # Serialize cache read-modify-write between the 60s loop and any
         # manual refresh (C3). Independent of the fetch dedupe lock.
         self._cache_lock = threading.Lock()
@@ -606,16 +628,29 @@ class RSSWorker:
     def _fetch_one(self, code, url):
         """Fetch and parse a single feed. Returns (code, status, items)."""
         source = self._SOURCE_LABELS.get(code, "Wire")
-        try:
-            # stream=True + _read_capped: bound the RSS body so a hostile/
-            # compromised feed origin (or a TLS-MITM) can't balloon-load
-            # the always-on RSS daemon's memory every 60s.
-            r = requests.get(url, headers=BROWSER_HEADERS, timeout=10,
-                             stream=True)
-            if r.status_code != 200:
-                return code, "ERR", []
-            raw = _read_capped(r, _HTTP_MAX_BYTES_SCRAPE_HTML)
-        except (requests.RequestException, OSError, ValueError):
+        # Retry before giving up: wire origins bot-filter an occasional
+        # request (see WIRE_ATTEMPTS). Failures are logged with the feed
+        # code + reason only — never the URL.
+        raw = None
+        last_why = ""
+        for attempt in range(1, self.WIRE_ATTEMPTS + 1):
+            try:
+                # stream=True + _read_capped: bound the RSS body so a hostile/
+                # compromised feed origin (or a TLS-MITM) can't balloon-load
+                # the always-on RSS daemon's memory every 60s.
+                r = requests.get(url, headers=WIRE_HEADERS, timeout=10,
+                                 stream=True)
+                if r.status_code == 200:
+                    raw = _read_capped(r, _HTTP_MAX_BYTES_SCRAPE_HTML)
+                    break
+                last_why = "HTTP %d" % r.status_code
+            except (requests.RequestException, OSError, ValueError) as exc:
+                last_why = type(exc).__name__
+            if attempt < self.WIRE_ATTEMPTS:
+                time.sleep(self.WIRE_RETRY_BACKOFF)
+        if raw is None:
+            _log.warning("RSS %s: fetch failed after %d attempts (%s)",
+                         code, self.WIRE_ATTEMPTS, last_why)
             return code, "ERR", []
 
         try:
@@ -626,7 +661,8 @@ class RSSWorker:
             # the sanitizer drops them before they reach our HTML unescape
             # + Treeview render path.
             parsed = feedparser.parse(raw, sanitize_html=True)
-        except Exception:
+        except Exception as exc:
+            _log.warning("RSS %s: parse failed (%s)", code, type(exc).__name__)
             return code, "ERR", []
 
         out = []
@@ -668,6 +704,21 @@ class RSSWorker:
             })
         return code, "OK", out
 
+    def _apply_status(self, code, status):
+        """Map one cycle's outcome to the displayed status, with
+        hysteresis. A single transient failure keeps the previous status
+        (the retries in ``_fetch_one`` already absorb most blips); only
+        ``FAIL_STREAK_TO_ERR`` consecutive failed cycles turn the
+        indicator red. Any success resets the streak immediately."""
+        if status == "OK":
+            self._fail_streaks[code] = 0
+            self.statuses[code] = "OK"
+            return
+        streak = self._fail_streaks.get(code, 0) + 1
+        self._fail_streaks[code] = streak
+        if streak >= self.FAIL_STREAK_TO_ERR:
+            self.statuses[code] = "ERR"
+
     def fetch_feeds(self):
         # Three feeds run in parallel — they're independent network calls
         # bottlenecked on origin latency, not CPU.
@@ -688,7 +739,7 @@ class RSSWorker:
                     code, status, feed_items = fut.result()
                 except Exception:
                     continue
-                self.statuses[code] = status
+                self._apply_status(code, status)
                 items.extend(feed_items)
         with self._fetch_lock:
             self._last_fetch_items = list(items)
