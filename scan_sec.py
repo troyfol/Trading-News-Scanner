@@ -1602,8 +1602,12 @@ class DataFetcher:
                 elif "f=geo_" in a["href"]: meta["country"] = a.get_text(strip=True)
                 if meta["sector"] and meta["country"]: break
             
-            snap = soup.find("table", class_="snapshot-table2")
-            if snap:
+            # Finviz redesigned the quote page: the snapshot grid is now
+            # SIX separate <table class="snapshot-table2"> columns (each row a
+            # [label, value] pair), not one wide table. Walk them all — find()
+            # only saw the first column, silently dropping Earnings, EPS/Sales
+            # Surpr., Shs Float, Short Float and Rel Volume.
+            for snap in soup.find_all("table", class_="snapshot-table2"):
                 for tr in snap.find_all("tr"):
                     tds = tr.find_all("td")
                     # Snapshot table is laid out as label/value/label/value
@@ -4872,6 +4876,12 @@ class ScannerApp(tk.Tk):
             if date_str is None:
                 rd = parquet_row.get("report_date")
                 date_str = self._fmt_short_date(pd.Timestamp(rd))
+                # Preserve the BMO/AMC/AH marker (same as the historical
+                # resolver) so a Finviz-less fallback still shows the timing.
+                rt = (str(parquet_row.get("report_time")) if "report_time" in parquet_row.index else "") or ""
+                mm = re.search(r"\b(BMO|AMC|AH)\b", rt, flags=re.IGNORECASE)
+                if mm:
+                    date_str = f"{date_str} {mm.group(1).upper()}"
                 date_obj = pd.Timestamp(rd).date()
         elif rec.get("file_date") and not is_new_quarter:
             period_ending = rec.get("report_date")

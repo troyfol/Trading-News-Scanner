@@ -59,19 +59,21 @@ def main():
         r = fetcher.session.get(f"https://finviz.com/quote.ashx?t={SYM}&p=d",
                                 headers=ss.BROWSER_HEADERS, timeout=10)
         soup = BeautifulSoup(r.text, "html.parser")
-        snap = soup.find("table", class_="snapshot-table2")
-        for tr in snap.find_all("tr"):
-            tds = tr.find_all("td")
-            for i in range(0, len(tds) - 1, 2):
-                label = tds[i].get_text(strip=True).lower()
-                if "eps/sales" in label and "surpr" in label:
-                    cell = tds[i + 1]
-                    kids = [c for c in cell.children if hasattr(c, "get_text")]
-                    print("  cell text:", repr(cell.get_text(strip=True)))
-                    print("  cell html:", repr(str(cell))[:300])
-                    print("  child spans:", [c.get_text(strip=True) for c in kids])
-                if label == "earnings":
-                    print("  earnings cell:", repr(tds[i + 1].get_text(strip=True)))
+        # Finviz's snapshot grid is now 6 separate snapshot-table2 columns —
+        # walk them all (find() saw only the first, missing Earnings/EPS-Sales).
+        for snap in soup.find_all("table", class_="snapshot-table2"):
+            for tr in snap.find_all("tr"):
+                tds = tr.find_all("td")
+                for i in range(0, len(tds) - 1, 2):
+                    label = tds[i].get_text(strip=True).lower()
+                    if "eps/sales" in label and "surpr" in label:
+                        cell = tds[i + 1]
+                        kids = [c for c in cell.children if hasattr(c, "get_text")]
+                        print("  cell text:", repr(cell.get_text(strip=True)))
+                        print("  cell html:", repr(str(cell))[:300])
+                        print("  child spans:", [c.get_text(strip=True) for c in kids])
+                    if label == "earnings":
+                        print("  earnings cell:", repr(tds[i + 1].get_text(strip=True)))
     except Exception as e:
         print("  raw cell dump failed:", type(e).__name__, e)
 
