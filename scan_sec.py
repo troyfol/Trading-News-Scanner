@@ -3098,6 +3098,14 @@ class ScannerApp(tk.Tk):
         # Double-click the "Earn: …" label to open a chart of the
         # ticker's quarterly EPS / Revenue history.
         self.lbl_earnings.bind("<Double-Button-1>", self.open_earnings_chart)
+        # Report-day freshness marker. On the day Finviz says the company
+        # reports, its surprise cells often still show the PRIOR quarter
+        # for hours. This label sits immediately ahead of the surprise
+        # values and says whether they are (NEW), (OLD) or unverifiable
+        # (?). See _resolve_report_day_freshness.
+        self.lbl_earn_fresh = tk.Label(self.earnings_row, text="", bg=self.colors["BG"], fg=self.colors["FG"], cursor="hand2")
+        self.lbl_earn_fresh.pack(side="left", padx=(4, 0), anchor="w")
+        self.lbl_earn_fresh.bind("<Double-Button-1>", self.open_earnings_chart)
         self.lbl_eps_surp = tk.Label(self.earnings_row, text="", bg=self.colors["BG"], fg=self.colors["FG"], cursor="hand2")
         self.lbl_eps_surp.pack(side="left", padx=2, anchor="w")
         self.lbl_eps_surp.bind("<Double-Button-1>", self.open_earnings_chart)
@@ -4143,6 +4151,7 @@ class ScannerApp(tk.Tk):
         self.lbl_meta.config(bg=c["BG"], fg=c["FG"])
         self.earnings_row.config(bg=c["BG"])
         self.lbl_earnings.config(bg=c["BG"])
+        self.lbl_earn_fresh.config(bg=c["BG"])
         self.lbl_eps_surp.config(bg=c["BG"])
         self.lbl_sales_surp.config(bg=c["BG"])
         if hasattr(self, "lbl_eps_yoy"):
@@ -4228,6 +4237,9 @@ class ScannerApp(tk.Tk):
             self.lbl_etf_hold.config(font=("Segoe UI", s+2, "bold"))
         self.lbl_meta.config(font=("Segoe UI", s+2))
         self.lbl_earnings.config(font=("Segoe UI", s+2))
+        # Bold so the report-day marker reads at a glance next to the
+        # values it qualifies.
+        self.lbl_earn_fresh.config(font=("Segoe UI", s+2, "bold"))
         self.lbl_eps_surp.config(font=("Segoe UI", s+2))
         self.lbl_sales_surp.config(font=("Segoe UI", s+2))
         if hasattr(self, "lbl_eps_yoy"):
@@ -4374,6 +4386,7 @@ class ScannerApp(tk.Tk):
         self.lbl_float.config(text="")
         self.lbl_meta.config(text="Loading...")
         self.lbl_earnings.config(text="")
+        self.lbl_earn_fresh.config(text="")
         self.lbl_eps_surp.config(text="")
         self.lbl_sales_surp.config(text="")
         if hasattr(self, "lbl_eps_yoy"):
@@ -5014,10 +5027,18 @@ class ScannerApp(tk.Tk):
             eps_est, rev_est = self._row_estimates(parquet_row)
             eps_surp_weak, rev_surp_weak = self._surp_weak_flags(eps_est, rev_est)
 
+        # Report-day freshness marker. Judged on the RAW Finviz scrape
+        # (not the possibly parquet-gap-filled display values) — the
+        # question is whether Finviz itself has refreshed yet.
+        report_day_fresh = self._resolve_report_day_freshness(
+            sym_u, fv_date, fv_eps_surp, fv_rev_surp, df,
+        )
+
         return {
             "date_str": date_str,
             "date_obj": date_obj,
             "is_future": False,
+            "report_day_fresh": report_day_fresh,
             "eps_surp": _fmt_signed_pct(eps_surp_val),
             "rev_surp": _fmt_signed_pct(rev_surp_val),
             "eps_yoy": eps_yoy_val,
@@ -5032,6 +5053,146 @@ class ScannerApp(tk.Tk):
             "needs_finviz_yoy": needs_finviz_yoy,
             "sec_accession": rec.get("accession") or "" if needs_xbrl_yoy else "",
         }
+
+    # --- Report-day freshness -----------------------------------------
+    # Identifying "the previous quarter" is the crux of this feature: a
+    # baseline off by one quarter turns a stale Finviz page into a false
+    # (NEW). We rank by ``period_ending`` — the fiscal quarter itself —
+    # NOT by report_date gaps. Measured over the 140k-row parquet,
+    # consecutive quarters can report as little as 11 days and as much as
+    # 268 days apart (median 91), so a report_date window alone both
+    # skips real quarters and admits older ones.
+    #
+    # Two guards bracket the choice:
+    #   1. Rows reported within _SAME_QUARTER_EXCL_DAYS of the anchor are
+    #      THIS quarter's own row (the parquet's batch refresh already
+    #      ingested today's report). Finviz and the parquet agree on a
+    #      given report's date to within a day or two, so a small window
+    #      excludes it without eating a genuine prior quarter.
+    #   2. The chosen row's period_ending must sit _PREV_QUARTER_MIN..MAX
+    #      days before the anchor. On real data this accepts 97.2% of true
+    #      previous quarters while admitting the quarter-before-last only
+    #      0.02% of the time, and it catches a current-quarter row whose
+    #      report_date drifted past guard 1 (those land ~66 days out,
+    #      well under the floor).
+    # Anything outside means no trustworthy baseline -> "?" rather than a
+    # guessed (NEW)/(OLD).
+    _SAME_QUARTER_EXCL_DAYS = 7
+    _PREV_QUARTER_MIN_DAYS = 100
+    _PREV_QUARTER_MAX_DAYS = 210
+    # Fallback window, on report_date, for rows with no usable
+    # period_ending. Wider and blunter — it is only reached when the
+    # precise signal is missing.
+    _PREV_RD_MIN_DAYS = 21
+    _PREV_RD_MAX_DAYS = 200
+    # Finviz publishes surprises rounded to 2 dp; the parquet keeps full
+    # precision (77.598031 vs "+77.60%"). Compare with a tolerance a hair
+    # above that rounding step so equal values match and genuinely new
+    # ones (which move by whole points) never do.
+    _SURPRISE_MATCH_TOL = 0.01
+
+    def _prev_quarter_surprises(self, sym_u, fv_date, df):
+        """``(eps_pct, rev_pct)`` from the quarter immediately preceding
+        ``fv_date``, or ``(None, None)`` when no such quarter is in the
+        parquet. Either element may independently be None when that cell
+        is absent for the matched row."""
+        import pandas as pd
+
+        if df is None or getattr(df, "empty", True) or fv_date is None:
+            return None, None
+        try:
+            sub = df[df["ticker"] == sym_u]
+        except Exception:
+            return None, None
+        if sub is None or sub.empty or "report_date" not in sub.columns:
+            return None, None
+        # Drop Finnhub calendar-proxy placeholders (Mar 31/Jun 30/Sep 30/
+        # Dec 31 regardless of fiscal calendar, NaN surprise_rev_pct).
+        # They both mis-date the "previous quarter" and would poison the
+        # comparison — the same exclusion the past-row selector applies.
+        if "source" in sub.columns and "report_date_proxy" in sub.columns:
+            try:
+                sub = sub.loc[~((sub["source"] == "finnhub")
+                                & sub["report_date_proxy"].fillna(False).astype(bool))]
+            except Exception:
+                pass
+        if sub.empty:
+            return None, None
+        anchor = pd.Timestamp(fv_date)
+        try:
+            # Guard 1: drop this quarter's own row (and anything later).
+            rd_gap = (anchor - sub["report_date"]).dt.days
+            sub = sub.loc[rd_gap >= self._SAME_QUARTER_EXCL_DAYS]
+            if sub.empty:
+                return None, None
+            # Rank by fiscal quarter when we have one; fall back to
+            # report_date only when period_ending is unusable.
+            if "period_ending" in sub.columns and sub["period_ending"].notna().any():
+                cand = sub.loc[sub["period_ending"].notna()]
+                pe_gap = (anchor - cand["period_ending"]).dt.days
+                prior = cand.loc[(pe_gap >= self._PREV_QUARTER_MIN_DAYS)
+                                 & (pe_gap <= self._PREV_QUARTER_MAX_DAYS)]
+                sort_col = "period_ending"
+            else:
+                rd_gap = (anchor - sub["report_date"]).dt.days
+                prior = sub.loc[(rd_gap >= self._PREV_RD_MIN_DAYS)
+                                & (rd_gap <= self._PREV_RD_MAX_DAYS)]
+                sort_col = "report_date"
+        except Exception:
+            return None, None
+        if prior.empty:
+            return None, None
+        row = prior.sort_values(sort_col, ascending=False).iloc[0]
+
+        def _num(col):
+            if col not in row.index:
+                return None
+            v = row.get(col)
+            try:
+                return float(v) if pd.notna(v) else None
+            except (TypeError, ValueError):
+                return None
+
+        return _num("surprise_eps_pct"), _num("surprise_rev_pct")
+
+    def _resolve_report_day_freshness(self, sym_u, fv_date, fv_eps, fv_rev, df):
+        """Is Finviz showing THIS quarter's surprises, on the day it says
+        the company reports?
+
+        Finviz rolls its earnings date forward before it refreshes the
+        surprise cells, so for hours on report day the date is today
+        while the numbers still belong to last quarter. Compare the
+        just-scraped values against the previous quarter's parquet row:
+
+          * ``"old"``     — every value we can compare is identical to
+                            last quarter → Finviz hasn't updated yet.
+          * ``"new"``     — at least one value moved → these are this
+                            quarter's numbers.
+          * ``"unknown"`` — no previous-quarter row (or no overlapping
+                            cells) to compare against.
+          * ``None``      — not report day, or nothing scraped to judge.
+
+        Only cells present on BOTH sides are compared, so a quarter that
+        reports EPS but no revenue is judged on EPS alone rather than
+        being forced to "unknown"."""
+        if fv_date is None or fv_date != datetime.now().date():
+            return None
+        # Nothing scraped means there are no values for the marker to sit
+        # in front of — the absence is its own signal.
+        if fv_eps is None and fv_rev is None:
+            return None
+        prev_eps, prev_rev = self._prev_quarter_surprises(sym_u, fv_date, df)
+        pairs = []
+        if fv_eps is not None and prev_eps is not None:
+            pairs.append((fv_eps, prev_eps))
+        if fv_rev is not None and prev_rev is not None:
+            pairs.append((fv_rev, prev_rev))
+        if not pairs:
+            return "unknown"
+        if all(abs(live - prior) <= self._SURPRISE_MATCH_TOL
+               for live, prior in pairs):
+            return "old"
+        return "new"
 
     def _finviz_surprises_if_same_quarter(self, meta, anchor_date):
         """Return ``{'eps': '...%', 'rev': '...%'}`` when Finviz's
@@ -5063,6 +5224,7 @@ class ScannerApp(tk.Tk):
 
     def _clear_earnings_labels(self):
         self.lbl_earnings.config(text="")
+        self.lbl_earn_fresh.config(text="")
         self.lbl_eps_surp.config(text="")
         self.lbl_sales_surp.config(text="")
         if hasattr(self, "lbl_eps_yoy"):
@@ -7433,6 +7595,21 @@ class ScannerApp(tk.Tk):
             date_color = self.colors["FG"]
         self.lbl_earnings.config(text=f"{star}Earn: {earn_str}", fg=date_color)
 
+        # Report-day freshness marker, immediately ahead of the values it
+        # qualifies. Resolves to None for every non-report-day row (and
+        # for the Historical view, whose dict has no such key), so the
+        # label is blank the rest of the time. Painted before the
+        # is_future early-return so an upcoming row always clears it.
+        fresh = resolved.get("report_day_fresh")
+        if fresh == "old":
+            self.lbl_earn_fresh.config(text="(OLD)", fg=self._FRESH_OLD_COLOR)
+        elif fresh == "unknown":
+            self.lbl_earn_fresh.config(text="?", fg=self._FRESH_UNK_COLOR)
+        elif fresh == "new":
+            self.lbl_earn_fresh.config(text="(NEW)", fg=self.earn_pos_color)
+        else:
+            self.lbl_earn_fresh.config(text="")
+
         # Future safeguard: hide all numeric fields when the displayed
         # event is upcoming. Per the spec, we never backfill with
         # last-quarter values for a future-anchored row.
@@ -8370,6 +8547,13 @@ class ScannerApp(tk.Tk):
                                 # it renders neutral instead of blue/pink.
     _SURP_POS_COLOR = "#00CC00" # bright green
     _SURP_NEG_COLOR = "#FF4040" # bright red
+    # Report-day freshness marker (see _resolve_report_day_freshness).
+    # "(NEW)" reuses the user's earn_pos_color — the same green a
+    # same-day earnings date paints in — so fresh values read as one
+    # visual unit with the date. The two "unconfirmed" states get their
+    # own yellows so they're distinguishable at a glance.
+    _FRESH_OLD_COLOR = "#FFFF00"  # bright yellow — values are last quarter's
+    _FRESH_UNK_COLOR = "#FFD700"  # gold — no prior quarter to compare against
 
     # Earnings-chart-popup color overrides (user-editable via the chart's
     # "Colors…" settings button, persisted in scanner_settings.json,

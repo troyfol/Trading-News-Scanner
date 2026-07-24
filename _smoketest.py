@@ -822,6 +822,174 @@ def test_float_coloration_settings():
         _teardown(app)
 
 
+def test_report_day_freshness_marker():
+    """On the day Finviz says a company reports, its surprise cells often
+    still hold the PRIOR quarter's numbers. The freshness marker compares
+    the just-scraped values against the previous quarter's parquet row and
+    reports (OLD) / (NEW) / ? accordingly."""
+    _hr("report-day (OLD)/(NEW)/? freshness marker")
+    import datetime as _dt
+    import pandas as pd
+    app = _make_app()
+    try:
+        today = _dt.date.today()
+        ts = pd.Timestamp(today)
+
+        def _df(rows):
+            return pd.DataFrame(rows)
+
+        def _row(days_ago, eps, rev, ticker="TEST", source="finviz",
+                 proxy=False, pe_days_ago=None):
+            # period_ending defaults to 60d before the report date — the
+            # real parquet's typical reporting lag.
+            if pe_days_ago is None:
+                pe_days_ago = days_ago + 60
+            return {
+                "ticker": ticker,
+                "report_date": ts - pd.Timedelta(days=days_ago),
+                "period_ending": ts - pd.Timedelta(days=pe_days_ago),
+                "surprise_eps_pct": eps,
+                "surprise_rev_pct": rev,
+                "source": source,
+                "report_date_proxy": proxy,
+            }
+
+        F = app._resolve_report_day_freshness
+
+        # Baseline: previous quarter 91 days back at 77.598 / 9.0926 —
+        # the real RDDT shape. Finviz still showing those rounded to 2dp
+        # means it has NOT refreshed.
+        prev = _df([_row(91, 77.598031, 9.092596)])
+        assert F("TEST", today, 77.60, 9.09, prev) == "old"
+        # Either value moving is enough to call it this quarter's.
+        assert F("TEST", today, 81.20, 9.09, prev) == "new"
+        assert F("TEST", today, 77.60, 12.40, prev) == "new"
+        assert F("TEST", today, 81.20, 12.40, prev) == "new"
+        # Sign flips must never be read as a match.
+        assert F("TEST", today, -77.60, -9.09, prev) == "new"
+
+        # Only overlapping cells are compared: Finviz posting EPS alone is
+        # judged on EPS, not forced to "unknown".
+        assert F("TEST", today, 77.60, None, prev) == "old"
+        assert F("TEST", today, 81.20, None, prev) == "new"
+        assert F("TEST", today, None, 9.09, prev) == "old"
+        # ...and the same when the PARQUET side is the one missing a cell.
+        prev_eps_only = _df([_row(91, 77.598031, float("nan"))])
+        assert F("TEST", today, 77.60, 9.09, prev_eps_only) == "old"
+        assert F("TEST", today, 81.20, 9.09, prev_eps_only) == "new"
+        # No overlap at all -> unverifiable, not a false (NEW).
+        assert F("TEST", today, None, 9.09, prev_eps_only) == "unknown"
+
+        # No previous quarter in the parquet -> "?".
+        assert F("TEST", today, 77.60, 9.09, _df([])) == "unknown"
+        assert F("TEST", today, 77.60, 9.09, None) == "unknown"
+        # A row too far back (skipped refresh) is not "last quarter".
+        assert F("TEST", today, 77.60, 9.09, _df([_row(400, 77.598, 9.09)])) == "unknown"
+        # Another ticker's rows must never be borrowed.
+        assert F("TEST", today, 77.60, 9.09,
+                 _df([_row(91, 77.598, 9.0926, ticker="OTHER")])) == "unknown"
+
+        # Correct-quarter selection: the parquet already carries TODAY's
+        # row (batch refresh landed first). The comparison must still
+        # anchor on the quarter BEFORE it, not on today's own row —
+        # otherwise every value would trivially "match" and read (OLD).
+        with_today = _df([
+            _row(0, 81.20, 12.40),     # this quarter, already in parquet
+            _row(91, 77.598031, 9.092596),  # the real previous quarter
+        ])
+        assert F("TEST", today, 81.20, 12.40, with_today) == "new"
+        assert F("TEST", today, 77.60, 9.09, with_today) == "old"
+        # A near-duplicate row a few days off the Finviz date is the SAME
+        # quarter, not the previous one — it must not become the baseline.
+        near_dup = _df([
+            _row(3, 81.20, 12.40),
+            _row(91, 77.598031, 9.092596),
+        ])
+        assert F("TEST", today, 81.20, 12.40, near_dup) == "new"
+        # Two prior quarters present -> the most recent one wins.
+        two_back = _df([
+            _row(91, 77.598031, 9.092596),
+            _row(182, 32.337247, 8.961240),
+        ])
+        assert F("TEST", today, 77.60, 9.09, two_back) == "old"
+        assert F("TEST", today, 32.34, 8.96, two_back) == "new"
+
+        # Irregular reporting cadence (the real SOTK shape): consecutive
+        # quarters only 41 days apart by report_date, but a clean 3-month
+        # step in period_ending. Ranking by report_date gaps skipped this
+        # quarter entirely and compared against TWO quarters back; ranking
+        # by period_ending must pick the true previous quarter.
+        irregular = _df([
+            _row(41, 20.0, 0.332713, pe_days_ago=41 + 97),    # prev quarter
+            _row(220, -20.0, -4.785099, pe_days_ago=220 + 96),  # two back
+        ])
+        assert app._prev_quarter_surprises("TEST", today, irregular)[0] == 20.0
+        assert F("TEST", today, 20.00, 0.33, irregular) == "old"
+        assert F("TEST", today, 25.00, 1.10, irregular) == "new"
+        # ...and the two-quarters-back row must never be the baseline.
+        assert F("TEST", today, -20.00, -4.79, irregular) == "new"
+
+        # A current-quarter row whose report_date drifted past the
+        # same-quarter exclusion still gets rejected by the period_ending
+        # floor (it sits ~66d out, far under the ~150d a real prior
+        # quarter shows), rather than trivially matching itself.
+        drifted = _df([_row(12, 81.20, 12.40, pe_days_ago=72)])
+        assert app._prev_quarter_surprises("TEST", today, drifted) == (None, None)
+        assert F("TEST", today, 81.20, 12.40, drifted) == "unknown"
+
+        # Finnhub calendar-proxy placeholders are excluded from baseline
+        # selection (wrong date + NaN rev), same as the past-row selector.
+        proxied = _df([
+            _row(60, 1.11, float("nan"), source="finnhub", proxy=True),
+            _row(91, 77.598031, 9.092596),
+        ])
+        assert F("TEST", today, 77.60, 9.09, proxied) == "old"
+
+        # Not report day -> no marker at all.
+        assert F("TEST", today - _dt.timedelta(days=1), 77.60, 9.09, prev) is None
+        assert F("TEST", today + _dt.timedelta(days=7), 77.60, 9.09, prev) is None
+        assert F("TEST", None, 77.60, 9.09, prev) is None
+        # Nothing scraped -> nothing to qualify.
+        assert F("TEST", today, None, None, prev) is None
+
+        # --- Painting -------------------------------------------------
+        base = {
+            "date_str": app._fmt_short_date(ts), "date_obj": today,
+            "is_future": False, "eps_surp": "+77.60%", "rev_surp": "+9.09%",
+            "eps_yoy": None, "rev_yoy": None, "period_ending": None,
+            "in_parquet": True, "needs_xbrl_yoy": False, "sec_accession": "",
+        }
+        app._paint_earnings_row(dict(base, report_day_fresh="old"))
+        assert app.lbl_earn_fresh.cget("text") == "(OLD)"
+        assert app.lbl_earn_fresh.cget("fg").upper() == app._FRESH_OLD_COLOR
+        app._paint_earnings_row(dict(base, report_day_fresh="unknown"))
+        assert app.lbl_earn_fresh.cget("text") == "?"
+        assert app.lbl_earn_fresh.cget("fg").upper() == app._FRESH_UNK_COLOR
+        app._paint_earnings_row(dict(base, report_day_fresh="new"))
+        assert app.lbl_earn_fresh.cget("text") == "(NEW)"
+        # (NEW) reuses the same green a same-day earnings date paints in.
+        assert app.lbl_earn_fresh.cget("fg") == app.earn_pos_color
+        assert app.lbl_earnings.cget("fg") == app.earn_pos_color
+        # Non-report-day and Historical dicts (no key) leave it blank.
+        app._paint_earnings_row(dict(base, report_day_fresh=None))
+        assert app.lbl_earn_fresh.cget("text") == ""
+        app._paint_earnings_row(dict(base, report_day_fresh="new"))
+        app._paint_earnings_row(base)  # key absent entirely
+        assert app.lbl_earn_fresh.cget("text") == ""
+        # An upcoming-earnings row must clear it too.
+        app._paint_earnings_row(dict(base, report_day_fresh="old"))
+        app._paint_earnings_row(dict(base, is_future=True,
+                                     date_obj=today + _dt.timedelta(days=7)))
+        assert app.lbl_earn_fresh.cget("text") == ""
+        # And so must the blanket clear.
+        app._paint_earnings_row(dict(base, report_day_fresh="old"))
+        app._clear_earnings_labels()
+        assert app.lbl_earn_fresh.cget("text") == ""
+        print("report-day freshness marker OK")
+    finally:
+        _teardown(app)
+
+
 def test_search_filter_paste_sanitizing():
     """A multi-line clipboard paste into the single-line Search box used
     to be stored verbatim (rendering as blank), persisted to settings,
@@ -1231,6 +1399,7 @@ def main():
     test_etf_swap_resolution_and_badge()
     test_float_coloration_settings()
     test_search_filter_paste_sanitizing()
+    test_report_day_freshness_marker()
     test_mcap_gradient_and_float_toggle()
     test_finviz_ea_synthesizer()
     test_eps_sales_surpr_cell_parser()
