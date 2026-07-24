@@ -4099,6 +4099,8 @@ class ScannerApp(tk.Tk):
         self.tree.tag_configure("hot_old", foreground=c["TXT_BAD"])
         self.tree.tag_configure("today", foreground=c["FG"])
         self.tree.tag_configure("old", foreground=c["TREE_OLD"])
+        # "everything is filtered out" notice — muted, like the hist notes.
+        self.tree.tag_configure("filter_note", foreground=c["CREDIT"])
         # Historical-mode row tags. Sentiment-keyed colors for Polygon
         # rows; EDGAR rows take the standard fg; banner uses the same
         # purple as the chart highlight; loading/notes muted grey.
@@ -7679,9 +7681,41 @@ class ScannerApp(tk.Tk):
                 terms.append(("sub", w))
         return terms
 
+    # A single-line tk.Entry happily accepts a multi-line clipboard paste:
+    # the tabs/newlines are stored in the widget value but render as
+    # nothing, so the box *looks* empty while holding hundreds of
+    # characters. That silently-invisible text then gets persisted to
+    # scanner_settings.json and re-applied as a filter on the next launch,
+    # hiding every headline (the panel reads as broken, not filtered).
+    # Normalize any whitespace run to a single space and cap the length so
+    # a stray paste can only ever produce a visible, bounded term.
+    _MAX_FILTER_TEXT = 200
+
+    @classmethod
+    def _sanitize_filter_text(cls, text):
+        if not text:
+            return ""
+        # \s covers tab/newline/CR/form-feed; also drop other C0 controls.
+        clean = re.sub(r"[\x00-\x1f\x7f]+", " ", str(text))
+        clean = re.sub(r"\s+", " ", clean).strip()
+        return clean[:cls._MAX_FILTER_TEXT]
+
+    def _sanitize_entry_in_place(self, entry):
+        """Read an Entry, normalize it, and write the clean value back so
+        what the user sees is exactly what filters (and what gets saved)."""
+        raw = entry.get()
+        clean = self._sanitize_filter_text(raw)
+        if clean != raw:
+            entry.delete(0, "end")
+            if clean:
+                entry.insert(0, clean)
+        return clean
+
     def apply_hot_words(self, event=None):
-        self.hot_words_new = self._parse_hot_words(self.entry_hot_new.get())
-        self.hot_words_old = self._parse_hot_words(self.entry_hot_old.get())
+        self.hot_words_new = self._parse_hot_words(
+            self._sanitize_entry_in_place(self.entry_hot_new))
+        self.hot_words_old = self._parse_hot_words(
+            self._sanitize_entry_in_place(self.entry_hot_old))
         # Hot-word changes never affect *visibility* — only tags. Skip
         # the full rebuild and just re-tag rows in place (E6).
         self._retag_visible_rows()
@@ -7707,8 +7741,8 @@ class ScannerApp(tk.Tk):
             self.entry_search_kw.focus_set()
 
     def apply_search(self, event=None):
-        kw_text = self.entry_search_kw.get()
-        date_text = self.entry_search_date.get().strip()
+        kw_text = self._sanitize_entry_in_place(self.entry_search_kw)
+        date_text = self._sanitize_entry_in_place(self.entry_search_date)
         # Reuse the highlight grammar for keyword search: "exact" =
         # whole-word, unquoted = substring. Multi-term = OR.
         self.search_keywords = self._parse_hot_words(kw_text) if kw_text.strip() else []
@@ -8696,6 +8730,18 @@ class ScannerApp(tk.Tk):
             self._displayed_indices.append(idx)
             self.tree.insert("", "end", values=(item['date'], item['age'] or item['time'], item['headline']), tags=(tag,), iid=str(idx))
 
+        # A search filter that matches nothing renders exactly like a dead
+        # feed. Say which one it is. Non-numeric iid, so on_double_click
+        # and _retag_visible_rows both skip it.
+        if (not self._displayed_indices and self.current_items
+                and (kw_terms or date_pred is not None)):
+            self.tree.insert(
+                "", "end", iid="filter_note", tags=("filter_note",),
+                values=("", "", "%d headlines hidden by the active Search "
+                               "filter — press Clear to show them"
+                               % len(self.current_items)),
+            )
+
     # Whitelist of URL schemes we trust to hand to the OS browser.
     # Defense against `javascript:`, `file:`, `vbscript:`, or custom
     # protocol-handler URLs that could slip in from a hostile RSS
@@ -9542,8 +9588,10 @@ class ScannerApp(tk.Tk):
             self._pending_show_rvol = data.get("show_rvol", False)
             # Back-compat: old settings had one "hot_words" field.
             legacy = data.get("hot_words", "")
-            self._pending_hot_words_new = data.get("hot_words_new", "")
-            self._pending_hot_words_old = data.get("hot_words_old", legacy)
+            self._pending_hot_words_new = self._sanitize_filter_text(
+                data.get("hot_words_new", ""))
+            self._pending_hot_words_old = self._sanitize_filter_text(
+                data.get("hot_words_old", legacy))
             saved_mode = data.get("watch_mode", "TS")
             if saved_mode in WATCH_MODES:
                 self.watch_mode.set(saved_mode)
@@ -9582,8 +9630,13 @@ class ScannerApp(tk.Tk):
                     if isinstance(v, str) and self._is_valid_hex_color(v):
                         self._pending_mcap_tier_colors[tier] = v
             self._pending_search_visible = bool(data.get("search_visible", False))
-            self._pending_search_kw = data.get("search_kw", "") or ""
-            self._pending_search_date = data.get("search_date", "") or ""
+            # Sanitize on the way in as well as on the way out: settings
+            # written by an older build can still carry a multi-line paste
+            # that would silently filter every headline away.
+            self._pending_search_kw = self._sanitize_filter_text(
+                data.get("search_kw", ""))
+            self._pending_search_date = self._sanitize_filter_text(
+                data.get("search_date", ""))
 
             # Earnings settings — validate against the same ranges the
             # Settings dialog enforces so a hand-edited file can't put

@@ -822,6 +822,70 @@ def test_float_coloration_settings():
         _teardown(app)
 
 
+def test_search_filter_paste_sanitizing():
+    """A multi-line clipboard paste into the single-line Search box used
+    to be stored verbatim (rendering as blank), persisted to settings,
+    and re-applied on the next launch — filtering every headline away so
+    the news panel looked dead. Sanitizing must collapse it to a bounded
+    single-line term, and a filter that hides everything must announce
+    itself with a note row instead of leaving the panel silently empty."""
+    _hr("search filter paste sanitizing + empty-state note")
+    app = _make_app()
+    try:
+        S = app._sanitize_filter_text
+        # Whitespace-only pastes (the invisible case) become "no filter".
+        assert S("\t\t\t\n\t") == ""
+        assert S("   ") == ""
+        assert S("") == ""
+        # Multi-line paste -> single line, capped.
+        blob = "Entered\tType\tSymbol\n07/23/26 09:46:33 AM\tSell\tRELL\n" * 30
+        clean = S(blob)
+        assert "\n" not in clean and "\t" not in clean
+        assert len(clean) <= app._MAX_FILTER_TEXT
+        # Normal terms + the quoted whole-word grammar survive untouched.
+        assert S("merger") == "merger"
+        assert S('"FDA" , halt') == '"FDA" , halt'
+        assert len(app._parse_hot_words(S('  "FDA" , offering '))) == 2
+
+        # Entry sanitizing is in-place: what filters is what's displayed
+        # (and therefore what on_close persists).
+        app.entry_search_kw.delete(0, "end")
+        app.entry_search_kw.insert(0, blob)
+        app.apply_search()
+        assert app.entry_search_kw.get() == clean
+        assert "\n" not in app.entry_search_kw.get()
+
+        # A pure-whitespace paste must clear to "no filter", not filter all.
+        app.entry_search_kw.delete(0, "end")
+        app.entry_search_kw.insert(0, "\t\t\t")
+        app.apply_search()
+        assert app.entry_search_kw.get() == ""
+        assert app.search_keywords == []
+
+        # Empty-state note: items present + filter matches none -> one
+        # note row, with a non-numeric iid so the row handlers skip it.
+        app.var_all.set(True)
+        app.current_items = [
+            {"date": "2026-07-24", "time": "09:00AM", "age": "1h",
+             "headline": "Reddit Inc reports Q2 results", "url": "",
+             "source": "Finviz", "is_today": True},
+        ]
+        app.entry_search_kw.delete(0, "end")
+        app.entry_search_kw.insert(0, "zzz-no-such-term")
+        app.apply_search()
+        kids = app.tree.get_children()
+        assert kids == ("filter_note",), kids
+        assert app._displayed_indices == []
+        assert not "filter_note".isdigit()  # on_double_click fast path skips it
+        # Clearing restores the row.
+        app.clear_search()
+        assert app.tree.get_children() == ("0",)
+
+        print("search filter paste sanitizing OK")
+    finally:
+        _teardown(app)
+
+
 def test_mcap_gradient_and_float_toggle():
     """MCap is now the always-on big header label with a 5-tier USD
     gradient; Float is the toggleable label. Verify the parse + tier
@@ -1166,6 +1230,7 @@ def main():
     test_etf_holdings_map_and_indicator()
     test_etf_swap_resolution_and_badge()
     test_float_coloration_settings()
+    test_search_filter_paste_sanitizing()
     test_mcap_gradient_and_float_toggle()
     test_finviz_ea_synthesizer()
     test_eps_sales_surpr_cell_parser()
