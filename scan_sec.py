@@ -8,7 +8,6 @@ import time
 import json
 import logging
 import math
-import tempfile
 import threading
 from collections import OrderedDict
 from functools import lru_cache
@@ -232,6 +231,27 @@ MIN_SCRAPE_INTERVAL = 1.0  # default; user-tunable via Settings dialog
 MIN_SCRAPE_INTERVAL_RANGE = (0.1, 10.0)
 MIN_SEC_INTERVAL = 0.15  # SEC fair-access: 10 req/s cap; stay well under
 
+# HTTP statuses that mean "this CIK will not resolve for the rest of this
+# session", so a negative cache entry is safe. Everything else (403, 429,
+# 5xx) is transient and must stay uncached or one blip poisons the ticker
+# until the app restarts.
+_SEC_PERMANENT_STATUSES = frozenset((404, 410))
+
+# Length caps for scraped, remote-controlled strings before they are stored
+# in ``meta`` and later rendered into a Tk label on the MAIN thread.
+#
+# Two distinct hazards, both closed by capping at the source:
+#   1. Tk renders a multi-hundred-kilobyte label string synchronously —
+#      640k chars measured at ~20 s of frozen UI.
+#   2. ``parse_earnings_date`` runs regexes over ``meta["earnings"]``; an
+#      unbounded value made their backtracking the dominant cost.
+# Every legitimate snapshot value is under 20 chars, so 64 is generous.
+# Values are truncated, never rejected — a capped string still renders and
+# still parses, it just can't be weaponized into a main-thread stall.
+_FINVIZ_FIELD_MAX = 64      # snapshot cells (mcap/float/short/rvol/earnings)
+_FINVIZ_NAME_MAX = 120      # company name from <title>
+_FINVIZ_CATALYST_MAX = 200  # catalyst blurb (legitimately a short sentence)
+
 # Float coloration: shares-float below this many shares renders in the
 # "low" color (a small float is the trade-relevant signal), else the
 # "high" color. Both the cutoff and the two colors are user-tunable via
@@ -313,6 +333,41 @@ DEFAULT_EARNINGS_DB_PATH = str(BASE_DIR / "earnings_history.parquet")
 _LEGACY_EARNINGS_DB_PATHS = ()
 
 
+# How many random temp names to try before giving up. A collision needs
+# two identical 64-bit randoms in the same directory, so >1 attempt is
+# already paranoia — the point of the bound is that it TERMINATES.
+_ATOMIC_WRITE_NAME_ATTEMPTS = 5
+
+
+def _open_exclusive_temp(path):
+    """Create a uniquely-named temp file beside ``path`` and return
+    ``(fd, tmp_path)``.
+
+    Deliberately NOT ``tempfile.mkstemp``. On Windows mkstemp's internal
+    retry loop treats a ``PermissionError`` from ``os.open`` as "a name
+    collision, try again" whenever ``os.access(dir, os.W_OK)`` is true —
+    and Windows ``os.access`` only inspects the read-only ATTRIBUTE, never
+    the ACL. So in a directory that is write-denied by ACL (``C:\\Program
+    Files``, a managed/enterprise machine, a read-only share, or Defender
+    Controlled Folder Access blocking an unsigned exe) mkstemp spins
+    ``range(TMP_MAX)`` = 2,147,483,647 iterations — measured ~54 h pegging
+    one core — and never raises, so the caller's ``except OSError`` never
+    fires and the GUI simply hangs.
+
+    A bounded loop lets ``PermissionError`` (an ``OSError``) propagate on
+    the first attempt, which is what every call site already expects.
+    """
+    path = Path(path)
+    for _ in range(_ATOMIC_WRITE_NAME_ATTEMPTS):
+        cand = path.with_name("%s.%s.tmp" % (path.name, os.urandom(8).hex()))
+        try:
+            fd = os.open(cand, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            continue
+        return fd, cand
+    raise OSError("could not create a unique temp file next to %s" % path)
+
+
 def _atomic_write_json(path, obj):
     """Write ``obj`` as JSON to ``path`` atomically: dump to a sibling
     temp file in the same directory, then ``os.replace`` it into place.
@@ -320,16 +375,20 @@ def _atomic_write_json(path, obj):
     leave a truncated or empty file — the reader sees either the old
     contents or the new ones, never a partial. Mirrors the temp+replace
     idiom already used for the SEC and wires caches. Raises on failure;
-    the caller decides whether to swallow."""
+    the caller decides whether to swallow.
+
+    The temp name is random (not a fixed ``*.tmp``) so a predictable name
+    in the shared-with-exe directory can't be pre-created/symlinked by
+    another local process, and a stale temp from a prior crash can't
+    collide."""
     path = Path(path)
-    # Unique temp name via mkstemp (not a fixed ``*.tmp``) so a predictable
-    # name in the shared-with-exe directory can't be pre-created/symlinked
-    # by another local process, and a stale temp from a prior crash can't
-    # collide.
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent),
-                               prefix=path.name + ".", suffix=".tmp")
+    fd, tmp = _open_exclusive_temp(path)
     try:
-        with os.fdopen(fd, "w") as f:
+        # encoding pinned to match the sibling writers in etf_map.py /
+        # etf_holdings.py. json.dump defaults to ensure_ascii=True so the
+        # bytes are ASCII either way today; being explicit means a later
+        # ensure_ascii=False can't silently make writes locale-dependent.
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(obj, f)
         os.replace(tmp, path)
     except Exception:
@@ -1230,7 +1289,21 @@ class DataFetcher:
             return None
         # Strip trailing time-of-day codes (AMC = After Market Close,
         # BMO = Before Market Open, AH = After Hours).
-        clean = re.sub(r'\s*(AMC|BMO|AH)\s*$', '', earnings_str, flags=re.IGNORECASE).strip()
+        #
+        # Done with endswith rather than the previous
+        # r'\s*(AMC|BMO|AH)\s*$'. That pattern was retried at every offset,
+        # and its leading \s* rescanned the rest of the string each time —
+        # quadratic over any interior whitespace run (measured 7.9 s on a
+        # 20k-char cell, on the Tk MAIN thread). Anchoring alone does not
+        # fix it; only removing the per-offset scan does. Callers also cap
+        # the value now (_FINVIZ_FIELD_MAX), but this stays linear so an
+        # uncapped caller can never reintroduce the stall.
+        clean = earnings_str.strip()
+        upper = clean.upper()
+        for _marker in ("AMC", "BMO", "AH"):
+            if upper.endswith(_marker):
+                clean = clean[:-len(_marker)].rstrip()
+                break
         if not clean:
             return None
 
@@ -1240,9 +1313,17 @@ class DataFetcher:
             #   "Mar 5/6"      -> "Mar 5"  (slash-DD only)
             #   "Mar 5 - Mar 7" -> "Mar 5"
             #   "Mar 5,"       -> "Mar 5"
-            stripped = re.sub(r'/\d{1,2}\s*$', '', clean).strip()
-            stripped = re.split(r'\s*[-–—]\s*', stripped, maxsplit=1)[0].strip()
-            stripped = stripped.rstrip(",").strip()
+            # Both trims are linear by construction: the slash form is
+            # anchored with \Z against an already-rstripped string, and the
+            # range form is a plain index scan rather than a regex whose
+            # \s*...\s* runs backtrack (the old r'\s*[-–—]\s*' split was the
+            # second quadratic site here).
+            stripped = re.sub(r'/\d{1,2}\Z', '', clean.rstrip()).strip()
+            cut = min((p for p in (stripped.find(d) for d in "-–—") if p >= 0),
+                      default=-1)
+            if cut >= 0:
+                stripped = stripped[:cut]
+            stripped = stripped.strip().rstrip(",").strip()
             if stripped and stripped != clean:
                 dt = self._try_parse_date(stripped)
         if dt is None:
@@ -1329,20 +1410,36 @@ class DataFetcher:
             if cached is not None:
                 self._submissions_cache.move_to_end(cik_padded)
         if cached is not None:
-            self.sec_status = "OK"
-            return cached if cached else None
+            # Only a real payload means "SEC answered". The empty-dict
+            # sentinel is a remembered FAILURE — reporting OK for it made
+            # the status light go green while every consumer got nothing,
+            # so the UI asserted "Shelf: NO" with a healthy indicator.
+            if cached:
+                self.sec_status = "OK"
+                return cached
+            self.sec_status = "ERR"
+            return None
         url = f"https://data.sec.gov/submissions/CIK{cik_padded}.json"
         self._sec_throttle()
         try:
             r = self.session.get(url, headers=HEADERS, timeout=10, stream=True)
             if r.status_code != 200:
                 self.sec_status = "ERR"
-                # Cache empty dict so a 404/403 doesn't retry per
-                # chart-open. Will retry next session.
-                with self._submissions_cache_lock:
-                    self._submissions_cache[cik_padded] = {}
-                    self._evict_lru(self._submissions_cache,
-                                    self._SUBMISSIONS_CACHE_MAX)
+                # Negative-cache ONLY statuses that are definitively about
+                # THIS resource and won't change this session: 404 (no such
+                # CIK) and 410 (gone). 403/429/5xx are transient — a
+                # fair-access throttle or an origin blip — and caching them
+                # meant one 503 made the app answer "Shelf: NO / SEC: >48h"
+                # for that ticker for the rest of the session without ever
+                # asking SEC again.
+                if r.status_code in _SEC_PERMANENT_STATUSES:
+                    with self._submissions_cache_lock:
+                        self._submissions_cache[cik_padded] = {}
+                        self._evict_lru(self._submissions_cache,
+                                        self._SUBMISSIONS_CACHE_MAX)
+                else:
+                    _log.debug("SEC submissions %s: transient HTTP %d, "
+                               "not cached", cik_padded, r.status_code)
                 return None
             # stream=True + _read_capped bounds the submissions blob before
             # json parse (this then lands in the cache, so capping it also
@@ -1419,6 +1516,14 @@ class DataFetcher:
 
         Returns ``(has_s3, recent_status, recent_earnings)``.
 
+        ``has_s3`` / ``recent_status`` are ``None`` when SEC was never
+        successfully queried (no CIK resolved, or the fetch failed). That
+        is DISTINCT from ``False`` / ``2``, which are positive findings
+        ("no shelf on file", "nothing filed in 48h"). The caller renders
+        the None case as an em-dash instead of asserting a negative — a
+        trader must never read "Shelf: NO" off a request that never got an
+        answer.
+
         ``recent_earnings`` is the most-recent PAST 10-K/10-Q filing
         (file_date <= today, form is exactly ``10-K`` or ``10-Q`` — 8-Ks
         and amendments excluded so an earnings-announcement 8-K can't
@@ -1426,8 +1531,10 @@ class DataFetcher:
             {"form", "accession", "file_date" (date), "report_date" (date|None)}
         or None when the CIK has no qualifying recent filing."""
         self.sec_status = None
-        has_s3 = False
-        recent_status = 2  # 0=<24h, 1=<48h, 2=>48h
+        # None = "not answered". Only set to a real value once we hold a
+        # submissions payload.
+        has_s3 = None
+        recent_status = None  # 0=<24h, 1=<48h, 2=>48h, None=unknown
         recent_earnings = None
         # Require a numeric CIK; bail out quietly otherwise (no spurious ERR).
         if not resolved_cik or not str(resolved_cik).isdigit():
@@ -1437,6 +1544,9 @@ class DataFetcher:
             data = self._fetch_submissions(cik_padded)
             if not data:
                 return has_s3, recent_status, recent_earnings
+            # SEC answered — from here on a negative IS a finding.
+            has_s3 = False
+            recent_status = 2
             recent = data.get("filings", {}).get("recent", {})
             forms = recent.get("form", [])
             dates = recent.get("filingDate", [])
@@ -1661,7 +1771,7 @@ class DataFetcher:
                 if "-" in title_text:
                     parts = title_text.split("-", 1)[1]
                     name_clean = parts.split("Stock")[0].strip()
-                    meta["name"] = name_clean
+                    meta["name"] = name_clean[:_FINVIZ_NAME_MAX]
             except (AttributeError, TypeError):
                 pass
 
@@ -1672,13 +1782,15 @@ class DataFetcher:
                     full_text = container.get_text(strip=True, separator=" ")
                     if len(full_text) < 25:
                         full_text = container.parent.get_text(strip=True, separator=" ")
-                    meta["catalyst"] = full_text
+                    meta["catalyst"] = full_text[:_FINVIZ_CATALYST_MAX]
             except (AttributeError, TypeError):
                 pass
 
             for a in soup.find_all("a", href=True):
-                if "f=sec_" in a["href"]: meta["sector"] = a.get_text(strip=True)
-                elif "f=geo_" in a["href"]: meta["country"] = a.get_text(strip=True)
+                if "f=sec_" in a["href"]:
+                    meta["sector"] = a.get_text(strip=True)[:_FINVIZ_FIELD_MAX]
+                elif "f=geo_" in a["href"]:
+                    meta["country"] = a.get_text(strip=True)[:_FINVIZ_FIELD_MAX]
                 if meta["sector"] and meta["country"]: break
             
             # Finviz redesigned the quote page: the snapshot grid is now
@@ -1694,7 +1806,10 @@ class DataFetcher:
                     # each pair twice.
                     for i in range(0, len(tds)-1, 2):
                         txt = tds[i].get_text(strip=True).lower()
-                        val = tds[i+1].get_text(strip=True)
+                        # Cap at the source: this value is remote-controlled
+                        # and every consumer below either renders it into a
+                        # main-thread Tk label or regex-parses it.
+                        val = tds[i+1].get_text(strip=True)[:_FINVIZ_FIELD_MAX]
                         if "shs float" in txt: meta["float"], meta["is_low"] = self.parse_float(val)
                         elif "short float" in txt: meta["short"] = val
                         elif "market cap" in txt: meta["mcap"] = val
@@ -3250,6 +3365,10 @@ class ScannerApp(tk.Tk):
         self.historical_results: list = []
         self._historical_busy = False
         self._historical_gen = 0
+        # Bumped on every symbol change so an in-flight earnings-chart
+        # load whose symbol went stale is dropped rather than rendered
+        # under the new ticker.
+        self._chart_gen = 0
         # Saved column widths for restoring wires layout when exiting
         # historical mode. Populated on enter, consumed on exit.
         self._wires_col_widths = None
@@ -3472,10 +3591,10 @@ class ScannerApp(tk.Tk):
         self._displayed_indices = []
         self._fetch_gen = 0
         # Single lock for ALL generation counters (_fetch_gen,
-        # _earnings_yoy_gen, _historical_gen). Today all mutations
-        # happen on the Tk thread so atomicity is already implicit,
-        # but wrapping makes the code forward-safe if a daemon thread
-        # ever needs to bump one. Reads stay lock-free (int read is
+        # _earnings_yoy_gen, _historical_gen, _chart_gen). Today all
+        # mutations happen on the Tk thread so atomicity is already
+        # implicit, but wrapping makes the code forward-safe if a daemon
+        # thread ever needs to bump one. Reads stay lock-free (int read is
         # atomic in CPython).
         self._gen_lock = threading.Lock()
 
@@ -4374,6 +4493,10 @@ class ScannerApp(tk.Tk):
         with self._gen_lock:
             self._fetch_gen += 1
             self._earnings_yoy_gen += 1
+            # Invalidate any in-flight earnings-chart load: its data was
+            # gathered for the OLD symbol and must not be drawn under the
+            # new one.
+            self._chart_gen += 1
         self.current_symbol = sym
         self.current_window_name = win_name
         self.current_recent_earnings = None
@@ -4447,8 +4570,10 @@ class ScannerApp(tk.Tk):
             has_s3, sec_recent_status, recent_earnings = future_sec.result()
         except Exception as exc:
             _log.warning("bg_fetch failed for %s: %s", sym, type(exc).__name__)
+            # None (not False/2) — the fetch failed, so the SEC fields are
+            # UNKNOWN and render as "—" rather than as a negative finding.
             meta, fv_items, has_s3, sec_recent_status, recent_earnings = \
-                {}, [], False, 2, None
+                {}, [], None, None, None
         # Filter the in-memory wires cache for the active symbol on this
         # daemon thread instead of the Tk main thread (audit: 500-row
         # regex walk was previously paid synchronously in change_symbol).
@@ -4487,63 +4612,108 @@ class ScannerApp(tk.Tk):
             target=self._do_manual_refresh, args=(sym, gen), daemon=True,
         ).start()
 
-    def _do_manual_refresh(self, sym, gen):
-        # 1. One-shot RSS pull. Both the merge and the within-window
-        # dedupe live inside the worker (C3 + E7), so we just call the
-        # high-level helpers — no risk of clobbering the 60s loop.
-        # ``wires_cached`` = the pull landed inside the worker's dedupe
-        # window, so the wires were NOT re-pulled (the Finviz/SEC scrape
-        # below still runs). Surfaced on the Last Refreshed label so the
-        # button doesn't look like it did nothing.
-        wires_cached = False
+    def _release_refresh_button(self):
+        """Restore the ↻ button to its idle state.
+
+        The single owner of re-enabling it. Called from a ``finally`` on
+        every exit path of the manual-refresh flow — a disabled tk.Button
+        will not invoke its command, so if any path skips this the control
+        is dead for the rest of the session with no way for the user to
+        recover short of restarting."""
         try:
-            rw = self.fetcher.rss_worker
-            new_items, wires_cached = rw.fetch_feeds(report_dedupe=True)
-            rw.merge_into_cache(new_items)
-        except Exception as exc:
-            _log.debug("manual refresh RSS pull failed: %s", type(exc).__name__)
+            self.btn_refresh.config(state="normal", text="↻")
+        except tk.TclError:
+            pass  # window already destroyed
 
-        if gen != self._fetch_gen:
-            return
-
-        # 2. Re-scrape Finviz + SEC for the current symbol (if any).
-        meta, fv_items, has_s3, sec_recent_status, recent_earnings = {}, [], False, 2, None
-        if sym:
+    def _do_manual_refresh(self, sym, gen):
+        # Everything is wrapped so the button is ALWAYS released. Two
+        # separate paths used to strand it disabled: the stale-generation
+        # early returns below (change_symbol bumps _fetch_gen on every
+        # symbol transition, so simply switching charts during an in-flight
+        # refresh wedged it), and any exception escaping the finisher.
+        # Note the guard belongs here rather than only in
+        # _finish_manual_refresh — the early returns never reach that.
+        try:
+            # 1. One-shot RSS pull. Both the merge and the within-window
+            # dedupe live inside the worker (C3 + E7), so we just call the
+            # high-level helpers — no risk of clobbering the 60s loop.
+            # ``wires_cached`` = the pull landed inside the worker's dedupe
+            # window, so the wires were NOT re-pulled (the Finviz/SEC scrape
+            # below still runs). Surfaced on the Last Refreshed label so the
+            # button doesn't look like it did nothing.
+            wires_cached = False
             try:
-                future_meta = self.fetcher.submit(self.fetcher.scrape_finviz, sym)
-                future_sec = self.fetcher.submit(
-                    self.fetcher.scrape_sec_data, sym, self.current_cik,
-                )
-                meta, fv_items = future_meta.result()
-                has_s3, sec_recent_status, recent_earnings = future_sec.result()
+                rw = self.fetcher.rss_worker
+                new_items, wires_cached = rw.fetch_feeds(report_dedupe=True)
+                rw.merge_into_cache(new_items)
             except Exception as exc:
-                # Broadened from a narrow tuple + logged: an unanticipated
-                # scraper error must NOT kill this thread before
-                # _finish_manual_refresh re-enables btn_refresh, or the
-                # button stays wedged disabled.
-                _log.warning("manual refresh scrape failed for %s: %s",
-                             sym, type(exc).__name__)
+                _log.debug("manual refresh RSS pull failed: %s",
+                           type(exc).__name__)
 
-        if gen != self._fetch_gen:
-            return
-        self.after(
-            0,
-            lambda: self._finish_manual_refresh(
-                sym, meta, fv_items, has_s3, sec_recent_status, recent_earnings,
-                wires_cached,
-            ),
-        )
+            if gen != self._fetch_gen:
+                return
+
+            # 2. Re-scrape Finviz + SEC for the current symbol (if any).
+            # None = unknown (renders "—"); see scrape_sec_data's contract.
+            meta, fv_items, has_s3, sec_recent_status, recent_earnings = {}, [], None, None, None
+            if sym:
+                try:
+                    future_meta = self.fetcher.submit(self.fetcher.scrape_finviz, sym)
+                    future_sec = self.fetcher.submit(
+                        self.fetcher.scrape_sec_data, sym, self.current_cik,
+                    )
+                    meta, fv_items = future_meta.result()
+                    has_s3, sec_recent_status, recent_earnings = future_sec.result()
+                except Exception as exc:
+                    # Broadened from a narrow tuple + logged: an unanticipated
+                    # scraper error must NOT kill this thread before
+                    # _finish_manual_refresh re-enables btn_refresh, or the
+                    # button stays wedged disabled.
+                    _log.warning("manual refresh scrape failed for %s: %s",
+                                 sym, type(exc).__name__)
+
+            if gen != self._fetch_gen:
+                return
+            self._marshal(
+                lambda: self._finish_manual_refresh(
+                    sym, meta, fv_items, has_s3, sec_recent_status,
+                    recent_earnings, wires_cached,
+                ),
+            )
+        finally:
+            # Marshalled separately from the finisher so it runs even on
+            # the stale-gen returns above (which deliberately skip applying
+            # the data, but must not skip restoring the control).
+            self._marshal(self._release_refresh_button)
+
+    def _marshal(self, fn):
+        """Run ``fn`` on the Tk thread from a worker, tolerating a root
+        that has already been destroyed (``after`` then raises
+        RuntimeError('main thread is not in main loop'), not TclError)."""
+        try:
+            self.after(0, fn)
+        except (RuntimeError, tk.TclError):
+            pass
 
     def _finish_manual_refresh(self, sym, meta, fv_items, has_s3, sec_recent_status,
                                recent_earnings, wires_cached=False):
-        if sym and sym == self.current_symbol:
-            self.update_full_data(sym, meta, fv_items, has_s3, sec_recent_status, recent_earnings)
-        elif not sym:
-            # No active symbol — just refresh the wires list from cache.
-            self.current_items = self.fetcher.get_wires(sym) if sym else self.current_items
-            self.refresh_ui()
-        self._set_last_refreshed_now(wires_cached=wires_cached)
-        self.btn_refresh.config(state="normal", text="↻")
+        # try/finally as well: this runs as an `after` callback, so an
+        # exception here is swallowed by Tk's report_callback_exception
+        # (invisible in a console=False build) and would otherwise skip the
+        # release below. update_full_data walks scraped meta and repaints
+        # ~10 labels, so it is not exception-free by construction.
+        try:
+            if sym and sym == self.current_symbol:
+                self.update_full_data(sym, meta, fv_items, has_s3, sec_recent_status, recent_earnings)
+            elif not sym:
+                # No active symbol — just refresh the wires list from cache.
+                self.current_items = self.fetcher.get_wires(sym) if sym else self.current_items
+                self.refresh_ui()
+            self._set_last_refreshed_now(wires_cached=wires_cached)
+        except Exception as exc:
+            _log.warning("manual refresh finish failed: %s", type(exc).__name__)
+        finally:
+            self._release_refresh_button()
 
     def _set_last_refreshed_now(self, wires_cached=False):
         if _ET_TZ is not None:
@@ -4584,12 +4754,23 @@ class ScannerApp(tk.Tk):
 
         self.lbl_name.config(text=display_name)
 
-        if has_s3: self.lbl_shelf.config(text="Shelf: YES", fg=self.colors["FG"])
-        else: self.lbl_shelf.config(text="Shelf: NO", fg=self.colors["CREDIT"])
+        # None = SEC was never successfully queried (no CIK resolved, or
+        # the fetch failed). Show the em-dash placeholder rather than
+        # asserting a negative: "Shelf: NO" on an unanswered request tells
+        # a trader there is no dilution shelf on file when the truth is
+        # simply unknown.
+        if has_s3 is None:
+            self.lbl_shelf.config(text="Shelf: —", fg=self.colors["CREDIT"])
+        elif has_s3:
+            self.lbl_shelf.config(text="Shelf: YES", fg=self.colors["FG"])
+        else:
+            self.lbl_shelf.config(text="Shelf: NO", fg=self.colors["CREDIT"])
 
         self._update_etf_label(self.current_symbol)
 
-        if sec_recent_status == 0: self.lbl_sec_recent.config(text="SEC: <24h", fg=self.colors["SEC_HOT"])
+        if sec_recent_status is None:
+            self.lbl_sec_recent.config(text="SEC: —", fg=self.colors["FG"])
+        elif sec_recent_status == 0: self.lbl_sec_recent.config(text="SEC: <24h", fg=self.colors["SEC_HOT"])
         elif sec_recent_status == 1: self.lbl_sec_recent.config(text="SEC: <48h", fg=self.colors["SEC_WARM"])
         else: self.lbl_sec_recent.config(text="SEC: >48h", fg=self.colors["SEC_COLD"])
 
@@ -4634,6 +4815,68 @@ class ScannerApp(tk.Tk):
     # legitimate size but bounds the OOM a typo'd/huge path could cause
     # (the network paths are byte-capped; this matches that posture).
     _PARQUET_MAX_BYTES = 512 * 1024 * 1024
+    # Columns every consumer indexes without a per-call guard. A frame
+    # missing either one raises deep inside a Tk callback, so it is
+    # rejected at the load boundary instead.
+    _PARQUET_REQUIRED_COLS = ("ticker", "report_date")
+    # Coerced once, here, so no downstream consumer has to re-derive its
+    # own safety: dates -> tz-naive datetime64, values -> float.
+    _PARQUET_DATE_COLS = ("report_date", "period_ending")
+    _PARQUET_NUM_COLS = ("surprise_eps_pct", "surprise_rev_pct",
+                         "yoy_eps_pct", "yoy_rev_pct",
+                         "reported_eps", "reported_rev",
+                         "estimated_eps", "estimated_rev")
+
+    @classmethod
+    def _coerce_parquet(cls, loaded, path):
+        """Validate + normalize a freshly-read earnings parquet.
+
+        Returns the coerced frame, or ``None`` when the file can't be used
+        (caller then keeps the previous cache).
+
+        The parquet is written by a SEPARATE process, so its schema is
+        untrusted input. Previously only ``ticker`` was checked, and every
+        consumer re-derived its own safety inconsistently — the live
+        landing-row resolver had none, so a renamed column, a tz-aware
+        timestamp, or a stringly-typed value column raised straight into
+        the Tk callback that repaints the news list. Normalizing once here
+        means a drifted file degrades to blank cells instead of aborting
+        the repaint."""
+        import pandas as pd
+
+        cols = set(getattr(loaded, "columns", []))
+        missing = [c for c in cls._PARQUET_REQUIRED_COLS if c not in cols]
+        if missing:
+            _log.warning("earnings parquet missing required column(s) %s; "
+                         "keeping previous cache: %s",
+                         ", ".join(missing), path)
+            return None
+        df = loaded
+        for col in cls._PARQUET_DATE_COLS:
+            if col not in cols:
+                continue
+            try:
+                s = pd.to_datetime(df[col], errors="coerce")
+                # A tz-aware column can't be compared against the naive
+                # Timestamps every consumer builds -> TypeError. Drop the
+                # tz rather than reject the file.
+                if getattr(s.dtype, "tz", None) is not None:
+                    s = s.dt.tz_localize(None)
+                df[col] = s
+            except Exception as exc:
+                _log.warning("earnings parquet: could not coerce %s (%s); "
+                             "keeping previous cache: %s",
+                             col, type(exc).__name__, path)
+                return None
+        for col in cls._PARQUET_NUM_COLS:
+            if col not in cols:
+                continue
+            try:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+            except Exception as exc:
+                _log.warning("earnings parquet: could not coerce %s (%s)",
+                             col, type(exc).__name__)
+        return df
 
     def _async_load_parquet(self):
         """Background-thread parquet loader. Sets
@@ -4672,14 +4915,13 @@ class ScannerApp(tk.Tk):
                     except OSError:
                         mtime = None
                     loaded = pd.read_parquet(path)
-                    # A malformed-but-readable parquet missing the 'ticker'
-                    # column would KeyError downstream; reject it here and
-                    # keep the previous cache instead.
-                    if "ticker" in getattr(loaded, "columns", []):
-                        df = loaded
-                    else:
-                        _log.warning("earnings parquet missing 'ticker' "
-                                     "column; keeping previous cache: %s", path)
+                    # Validate the required columns and normalize dtypes
+                    # ONCE here, so every consumer downstream sees a clean
+                    # frame instead of guarding (or failing to guard) on
+                    # its own. Returns None for an unusable file, in which
+                    # case the previous cache is kept.
+                    df = self._coerce_parquet(loaded, path)
+                    if df is None:
                         mtime = None
         except Exception as exc:
             # Distinguish a partial-write/transient read from "no file" in
@@ -4915,31 +5157,70 @@ class ScannerApp(tk.Tk):
                         & sub["report_date_proxy"].fillna(False).astype(bool)
                     )
                     past_mask = past_mask & ~proxy_mask
-                past = sub.loc[past_mask].sort_values(
-                    "report_date", ascending=False,
-                )
+                past = sub.loc[past_mask]
+                # Corrupt rows (period_ending after report_date) would
+                # otherwise win the most-recent-past pick and poison the
+                # YoY base — see _drop_impossible_periods.
+                past = self._drop_impossible_periods(past)
+                # Newest first, with ties broken meaningfully instead of
+                # by parquet row order.
+                past = self._rank_rows_by(
+                    past, (today_ts - past["report_date"]).dt.days,
+                ) if not past.empty else past
                 if not past.empty:
                     rd = past.iloc[0].get("report_date")
                     if pd.notna(rd) and (today_ts - pd.Timestamp(rd)).days <= STALE_CUTOFF_DAYS:
                         parquet_row = past.iloc[0]
 
         def _pq_num(col, present=True):
-            """Float value from the merged parquet row, or None."""
+            """Float value from the merged parquet row, or None.
+
+            ``float(v)`` is guarded: the load boundary now coerces the
+            known numeric columns, but this row can also carry columns
+            that boundary doesn't know about, and a bare float() on a
+            stringly-typed cell used to raise ValueError into the Tk
+            repaint. Non-finite values are rejected too (float() happily
+            parses 'nan'/'inf'), so a poisoned cell renders blank rather
+            than as a magnitude on a trading row."""
             if not present or parquet_row is None or col not in parquet_row.index:
                 return None
             v = parquet_row.get(col)
-            return float(v) if pd.notna(v) else None
+            try:
+                if pd.isna(v):
+                    return None
+                f = float(v)
+            except (TypeError, ValueError):
+                return None
+            return f if math.isfinite(f) else None
 
         # Just-reported-quarter detection. The local parquet is batch-
         # refreshed, so a quarter that reported AFTER the last refresh
-        # isn't here yet. When the live Finviz date is materially newer
-        # than the newest parquet row we matched (or there's no matched
-        # row at all), the displayed quarter is NEW: do NOT borrow that
-        # older row's period_ending / sales-surprise / YoY / weak-flags
-        # (the cross-quarter "hybrid row" bug). We surface the live
-        # Finviz date + surprises (which DO belong to the new quarter)
-        # and fill YoY asynchronously from the ty=ea page, greyed "(f)".
-        NEW_QUARTER_GAP_DAYS = 50
+        # isn't here yet. When the matched parquet row does NOT describe
+        # the same reporting event as the live Finviz date, the displayed
+        # quarter is NEW: do NOT borrow that older row's period_ending /
+        # sales-surprise / YoY / weak-flags (the cross-quarter "hybrid
+        # row" bug). We surface the live Finviz date + surprises (which DO
+        # belong to the new quarter) and fill YoY asynchronously from the
+        # ty=ea page, greyed "(f)".
+        #
+        # The test is "is this the SAME reporting event?", not "how far
+        # apart are consecutive quarters?". Those are different questions
+        # and only the first one is answerable here: if the parquet holds
+        # the row for the quarter Finviz is showing, the two report dates
+        # describe one event and agree to within a few days. If the
+        # parquet is a quarter behind, its newest row sits a full
+        # reporting cycle away.
+        #
+        # The previous rule -- gap > 50 days -- assumed consecutive
+        # quarters are always >50 days apart. Measured against the live
+        # parquet that is false for 3.88% of 137,425 real transitions
+        # (700 in the last 12 months, incl. ICLR at 36 days), and each
+        # one produced a row mixing this quarter's date + surprise with
+        # last quarter's YoY and period_ending, with needs_finviz_yoy
+        # False so nothing ever corrected it. abs() also catches the
+        # mirror case, where the parquet is AHEAD of a stale Finviz date.
+        # _SAME_QUARTER_EXCL_DAYS is the same-event tolerance already used
+        # by _prev_quarter_surprises.
         parquet_rd = None
         if parquet_row is not None:
             _prd = parquet_row.get("report_date")
@@ -4947,7 +5228,8 @@ class ScannerApp(tk.Tk):
         is_new_quarter = (
             fv_date is not None
             and (parquet_rd is None
-                 or (pd.Timestamp(fv_date) - parquet_rd).days > NEW_QUARTER_GAP_DAYS)
+                 or abs((pd.Timestamp(fv_date) - parquet_rd).days)
+                 >= self._SAME_QUARTER_EXCL_DAYS)
         )
 
         # Surprise: Finviz first, parquet fills only the gap — but for a
@@ -5080,6 +5362,94 @@ class ScannerApp(tk.Tk):
     _SAME_QUARTER_EXCL_DAYS = 7
     _PREV_QUARTER_MIN_DAYS = 100
     _PREV_QUARTER_MAX_DAYS = 210
+    # Source preference when two parquet rows describe the same report.
+    # Mirrors the upstream pipeline's own dedup order (finviz > zacks >
+    # finnhub); lower sorts first / wins.
+    _SOURCE_RANK = {"finviz": 0, "zacks": 1, "finnhub": 2}
+
+    @classmethod
+    def _drop_impossible_periods(cls, sub):
+        """Drop rows whose ``period_ending`` post-dates their
+        ``report_date``.
+
+        A company cannot report a fiscal quarter before that quarter has
+        ended, so such a row is corrupt on its face. The live parquet
+        carries them (GSIT period_ending 2026-12-01 / report_date
+        2026-05-07, NVEC, MSB, FNGR, ...), and they are NOT caught by the
+        finnhub-proxy filter. Left in, one can win the most-recent-past
+        selection and then feed ``_yoy_base_values``, which subtracts a
+        year from that bogus period and looks up the wrong quarter's
+        prior-year base.
+
+        Dropping to empty is fine and deliberate: the caller then simply
+        has no parquet enrichment and falls back to the live Finviz date
+        + surprises, which is the honest answer."""
+        if sub is None or getattr(sub, "empty", True):
+            return sub
+        cols = getattr(sub, "columns", [])
+        if "period_ending" not in cols or "report_date" not in cols:
+            return sub
+        try:
+            pe, rd = sub["period_ending"], sub["report_date"]
+            # A missing value on either side can't contradict anything.
+            return sub.loc[pe.isna() | rd.isna() | (pe <= rd)]
+        except Exception:
+            return sub
+
+    @classmethod
+    def _rank_rows_by(cls, frame, distance):
+        """Return ``frame`` ordered by ``distance`` (a Series aligned to
+        it) with deterministic, MEANINGFUL tie-breaks.
+
+        Ranking by distance alone left ties to be decided by parquet row
+        order, which systematically handed the win to whichever source
+        happened to be written first. Across the live file that put 14 of
+        48 duplicate ``(ticker, report_date)`` groups on a row whose
+        period_ending post-dates its own report_date (IMMR 2024-08-20 =>
+        +640.26% instead of +78.00%; FDX and RENT on the live landing
+        row). Ties now break on report lag — how plausible the
+        period->report gap is — and then on source preference."""
+        import numpy as np
+        import pandas as pd
+
+        def _arr(series):
+            # float64 view with NaN for missing, which np.lexsort orders
+            # last — exactly the "unscored rows go to the back" behaviour
+            # we want. The fast path is a no-copy view; the fallback
+            # handles Int64/object dtypes that numpy can't cast directly.
+            try:
+                return np.asarray(series, dtype="float64")
+            except (TypeError, ValueError):
+                return pd.to_numeric(pd.Series(series), errors="coerce"
+                                     ).astype("float64").to_numpy()
+
+        # np.lexsort takes keys least-significant FIRST, so the primary
+        # key (distance) is appended last. This runs on the Tk thread on
+        # every symbol change, so it avoids the DataFrame copy that an
+        # .assign()+sort_values chain would make per call.
+        keys = []
+        if "source" in frame.columns:
+            try:
+                keys.append(_arr(frame["source"].map(cls._SOURCE_RANK)
+                                 .fillna(99)))
+            except (AttributeError, TypeError, ValueError):
+                pass
+        if {"period_ending", "report_date"} <= set(frame.columns):
+            try:
+                lag = (frame["report_date"] - frame["period_ending"]).dt.days
+                # A real report lands ~20-60 days after the period ends.
+                # Score the distance from that band so implausible lags
+                # sort last; a NaN lag sorts after every scored row.
+                keys.append(_arr((lag.clip(lower=20, upper=60) - lag).abs()))
+            except (AttributeError, TypeError, ValueError):
+                pass
+        keys.append(_arr(distance))
+        try:
+            order = np.lexsort(keys)
+        except (TypeError, ValueError):
+            # Ragged/unsortable keys — fall back to distance alone.
+            order = np.argsort(_arr(distance), kind="stable")
+        return frame.iloc[order]
     # Fallback window, on report_date, for rows with no usable
     # period_ending. Wider and blunter — it is only reached when the
     # precise signal is missing.
@@ -5449,7 +5819,8 @@ class ScannerApp(tk.Tk):
         except tk.TclError:
             pass
 
-    def _load_chart_data_with_gap_fill(self, sym, db_path):
+    def _load_chart_data_with_gap_fill(self, sym, db_path,
+                                       cik=None, finviz_meta=None):
         """Load LOCAL earnings history (the merged finviz/zacks/finnhub
         parquet) then gap-fill missing fields from EDGAR XBRL (and
         within-range missing-quarter rows from EDGAR too) and from the
@@ -5473,7 +5844,18 @@ class ScannerApp(tk.Tk):
         last month of the fiscal quarter (e.g. 2026-03-01 for Q1 2026).
         EDGAR's ``report_date`` is the actual period end (2026-03-31).
         We match by (year, month) which handles both calendar-fiscal
-        and non-calendar-fiscal companies correctly."""
+        and non-calendar-fiscal companies correctly.
+
+        ``cik`` and ``finviz_meta`` MUST be passed by the caller, snapshotted
+        on the Tk thread alongside ``sym``. This method runs on a daemon
+        thread for several seconds; it previously read ``self.current_cik``
+        and ``self.current_meta`` live, so a symbol change mid-load filled
+        ticker A's chart with ticker B's EDGAR filings and Finviz surprise
+        %s — rendered under A's title, counted as ordinary 'edgar'/'finviz'
+        cells, with no marker. They default to None (= skip that pass)
+        rather than falling back to the live attributes, so a future caller
+        that forgets to pass them degrades to less data instead of to
+        wrong data."""
         import pandas as pd
         counts = {"local": 0, "edgar": 0, "finviz": 0}
         df = self._load_earnings_history(sym, db_path)
@@ -5506,7 +5888,8 @@ class ScannerApp(tk.Tk):
         df["_eps_yoy_fv"] = False
         df["_rev_yoy_fv"] = False
 
-        cik = self.current_cik
+        # Snapshotted by the caller on the Tk thread — never read live
+        # here (see the docstring).
         cik_padded = ""
         if cik:
             try:
@@ -5670,7 +6053,8 @@ class ScannerApp(tk.Tk):
         # within ±14d of the row's report_date so we never attach the
         # prior quarter's surprises to a different period.
         today_ts = pd.Timestamp.now().normalize()
-        meta = self.current_meta or {}
+        # Snapshotted by the caller on the Tk thread — never read live here.
+        meta = finviz_meta or {}
         fv_earn_raw = (meta.get("earnings") or "").strip()
         fv_date = (
             self.fetcher.parse_earnings_date(fv_earn_raw)
@@ -5836,13 +6220,27 @@ class ScannerApp(tk.Tk):
         hist_date_for_chart = (
             self.historical_date if self.historical_active else None
         )
+        # Snapshot the CIK and the Finviz meta HERE, on the Tk thread,
+        # alongside `sym`. The worker below runs for seconds on a cold
+        # cache while the watcher keeps rebinding self.current_cik /
+        # self.current_meta; reading them off-thread merged another
+        # company's EDGAR filings and surprise %s into this chart.
+        cik_snapshot = self.current_cik
+        meta_snapshot = dict(self.current_meta or {})
+        # Generation guard: bumped on every symbol change, so a load whose
+        # symbol went stale is DROPPED rather than rendered under the new
+        # ticker's name.
+        with self._gen_lock:
+            self._chart_gen += 1
+            chart_gen = self._chart_gen
 
         self._chart_loading = True
 
         def worker():
             try:
                 df, source_counts = self._load_chart_data_with_gap_fill(
-                    sym, db_path)
+                    sym, db_path, cik=cik_snapshot,
+                    finviz_meta=meta_snapshot)
             except Exception as exc:
                 # The data load now lives inside this guard (it used to run
                 # bare on the Tk thread, outside the render try/except).
@@ -5852,7 +6250,7 @@ class ScannerApp(tk.Tk):
             try:
                 self.after(0, lambda: self._finish_open_earnings_chart(
                     sym, df, source_counts, next_e, next_e_when,
-                    hist_date_for_chart))
+                    hist_date_for_chart, chart_gen))
             except (RuntimeError, tk.TclError):
                 self._chart_loading = False
 
@@ -5860,10 +6258,18 @@ class ScannerApp(tk.Tk):
                          name="MS-ChartLoad").start()
 
     def _finish_open_earnings_chart(self, sym, df, source_counts, next_e,
-                                    next_e_when, hist_date_for_chart):
+                                    next_e_when, hist_date_for_chart,
+                                    chart_gen=None):
         """Main-thread completion of open_earnings_chart: render the chart
         (or the dates-only / no-data popup) from the off-thread load."""
         self._chart_loading = False
+        # Stale load: the charted symbol moved on while we were fetching.
+        # Rendering now would put this data under the CURRENT ticker's
+        # name, so drop it instead.
+        if chart_gen is not None and chart_gen != self._chart_gen:
+            _log.debug("dropping stale chart load for %s (gen %s != %s)",
+                       sym, chart_gen, self._chart_gen)
+            return
         if df is None or getattr(df, "empty", True):
             if next_e is not None:
                 self._show_dates_only_popup(sym, None, next_e)
@@ -6568,7 +6974,12 @@ class ScannerApp(tk.Tk):
         # Restore the user's last chart geometry + maximized state.
         # Fall back to the original 1000x940 sizing the first time the
         # chart is opened on a fresh install (no saved geometry yet).
-        saved_geo = getattr(self, "earnings_chart_geometry", "") or ""
+        # Same visible-desktop clamp as the main window: a chart geometry
+        # saved on a since-removed monitor otherwise makes the pop-out
+        # appear not to open at all.
+        saved_geo = self._usable_geometry(
+            getattr(self, "earnings_chart_geometry", "") or "", widget=win,
+        )
         if saved_geo:
             try:
                 win.geometry(saved_geo)
@@ -7557,7 +7968,24 @@ class ScannerApp(tk.Tk):
                            type(exc).__name__)
                 resolved = None
         else:
-            resolved = self._resolve_earnings_display(self.current_symbol, meta)
+            try:
+                resolved = self._resolve_earnings_display(
+                    self.current_symbol, meta,
+                )
+            except Exception as exc:
+                # Symmetric with the historical branch above. Without this
+                # guard the exception unwound through update_full_data and
+                # skipped the two statements that follow it there —
+                # refresh_ui() and _set_last_refreshed_now() — so a single
+                # drifted parquet blanked the NEWS LIST and froze the
+                # "Last Refreshed" clock, silently (console=False builds
+                # have nowhere to print the traceback). Worse, raising here
+                # lands after lbl_meta was painted but before the earnings
+                # labels are cleared, leaving the PREVIOUS symbol's
+                # earnings date + surprise on screen under the new ticker.
+                _log.warning("live earnings resolve failed (%s); clearing "
+                             "the earnings row", type(exc).__name__)
+                resolved = None
         if resolved is None:
             self._clear_earnings_labels()
             return
@@ -7727,11 +8155,16 @@ class ScannerApp(tk.Tk):
         if "source" in win.columns and "report_date_proxy" in win.columns:
             win = win[~((win["source"] == "finnhub")
                         & win["report_date_proxy"].fillna(False).astype(bool))]
+        # Rows whose period_ending post-dates their report_date are
+        # corrupt; dropping them here is what stops IMMR 2024-08-20 from
+        # showing +640.26% (a 2024-12-01 period) instead of +78.00%.
+        win = self._drop_impossible_periods(win)
         if win.empty:
             return None
-        # Nearest report_date to the entered date wins.
-        order = (win["report_date"] - tgt).abs().sort_values().index
-        row = win.loc[order[0]]
+        # Nearest report_date to the entered date wins; ties break on
+        # report-lag plausibility then source preference, not row order.
+        ranked = self._rank_rows_by(win, (win["report_date"] - tgt).abs())
+        row = ranked.iloc[0]
         rd = row["report_date"]
 
         has_yoy_eps = "yoy_eps_pct" in df.columns
@@ -8201,9 +8634,21 @@ class ScannerApp(tk.Tk):
                                reverse=True)
         results = _dedupe(wires_sorted) + _dedupe(poly_sorted) + _dedupe(edgar_sorted)
         self.historical_results = results
-        self._render_historical_results(sym, target_iso, results, notes)
-        self._historical_busy = False
-        self.btn_historical_lookup.config(state="normal", text="Lookup")
+        # Same shape as _finish_manual_refresh: the render walks scraped
+        # remote rows, so a surprise there must not strand the Lookup
+        # button disabled and _historical_busy latched. (Recoverable via
+        # Exit, unlike the ↻ button, but there is no reason to rely on
+        # the user finding that.)
+        try:
+            self._render_historical_results(sym, target_iso, results, notes)
+        except Exception as exc:
+            _log.warning("historical render failed: %s", type(exc).__name__)
+        finally:
+            self._historical_busy = False
+            try:
+                self.btn_historical_lookup.config(state="normal", text="Lookup")
+            except tk.TclError:
+                pass
         # Kick off the EDGAR enrichment pass on a daemon thread — now
         # 1-liner text summaries for 8-K-style filings ONLY (YoY/surprise
         # value extraction was removed; earnings live in the top panel,
@@ -9658,6 +10103,61 @@ class ScannerApp(tk.Tk):
         if url:
             self._safe_open_url(url)
 
+    # Tk geometry: WxH, optionally +X+Y. Each position component is
+    # "<sign><number>" where the number itself may be negative on a
+    # multi-monitor setup: a window on a monitor to the LEFT/ABOVE the
+    # primary has a negative absolute coordinate, which Tk reports as
+    # "+-1926" (a '+' meaning "from the left edge" followed by a negative
+    # value). The inner "-?" accepts that form.
+    _GEOMETRY_RE = re.compile(r"(\d+)x(\d+)(?:([+-])(-?\d+)([+-])(-?\d+))?$")
+    # A restored window must leave at least this many pixels on the
+    # visible desktop, or the user can't grab it.
+    _GEOMETRY_MIN_VISIBLE_PX = 60
+
+    def _usable_geometry(self, geo, widget=None):
+        """Validate ``geo`` and return it only if the window would land on
+        the visible desktop; else return the size-only ``WxH`` part (Tk
+        then places it on the primary monitor), or ``None`` if the string
+        is malformed.
+
+        Shape validation alone is not enough. ``on_close`` saves whatever
+        ``self.geometry()`` returns, so running on a left-hand/above
+        secondary monitor legitimately persists a negative coordinate.
+        Undock the laptop and that coordinate now points at a monitor that
+        no longer exists: the always-on-top window opens entirely
+        off-screen and the app reads as "failed to launch". The
+        ``except tk.TclError`` fallbacks around these calls never fire —
+        an off-screen geometry is perfectly legal Tk."""
+        if not isinstance(geo, str):
+            return None
+        geo = geo.strip()   # normalized, so we never hand Tk padded input
+        m = self._GEOMETRY_RE.fullmatch(geo)
+        if not m:
+            return None
+        w, h = int(m.group(1)), int(m.group(2))
+        size_only = "%dx%d" % (w, h)
+        if m.group(3) is None:      # no position component — nothing to clamp
+            return geo
+        widget = widget if widget is not None else self
+        try:
+            # Virtual root spans ALL monitors, and its origin is negative
+            # when a monitor sits left of / above the primary.
+            vx, vy = widget.winfo_vrootx(), widget.winfo_vrooty()
+            vw, vh = widget.winfo_vrootwidth(), widget.winfo_vrootheight()
+        except tk.TclError:
+            return geo
+        # Tk's "+-N" form still means "left edge at N".
+        x = int(m.group(4)) if m.group(3) == "+" else vx + vw - w - int(m.group(4))
+        y = int(m.group(6)) if m.group(5) == "+" else vy + vh - h - int(m.group(6))
+        pad = self._GEOMETRY_MIN_VISIBLE_PX
+        if (x + w <= vx + pad or y + h <= vy + pad
+                or x >= vx + vw - pad or y >= vy + vh - pad):
+            _log.warning("saved geometry %r is off the visible desktop "
+                         "(%dx%d at %d,%d); restoring size only",
+                         geo, vw, vh, vx, vy)
+            return size_only
+        return geo
+
     @staticmethod
     def _is_valid_hex_color(s):
         return bool(re.fullmatch(r"#[0-9A-Fa-f]{6}", s or ""))
@@ -9718,7 +10218,7 @@ class ScannerApp(tk.Tk):
         if not SETTINGS_FILE.exists():
             return
         try:
-            with open(SETTINGS_FILE, "r") as f:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
             if not isinstance(data, dict):
                 # Valid JSON but not an object — treat as corrupt so the
@@ -9744,17 +10244,11 @@ class ScannerApp(tk.Tk):
             # un-validated malformed value (e.g. from a partial write or a
             # hand-edit) makes self.geometry() raise tk.TclError, which is
             # NOT in this block's except tuple and would crash startup.
-            geo = data.get("geometry")
-            # Each position component is "<sign><number>" where the number
-            # itself may be negative on a multi-monitor setup: a window on a
-            # monitor to the LEFT/ABOVE the primary has a negative absolute
-            # coordinate, which Tk's wm geometry reports as "+-1926" (a '+'
-            # meaning "from the left edge" followed by a negative value). The
-            # inner "-?" accepts that form — without it fullmatch rejected
-            # every secondary-monitor geometry and the restore was silently
-            # skipped (window always reopened at Tk's default placement).
-            if isinstance(geo, str) and re.fullmatch(
-                    r"\d+x\d+([+-]-?\d+){0,2}", geo):
+            # Validated for shape AND clamped to the visible desktop, so a
+            # geometry saved on a monitor that has since been unplugged
+            # can't reopen the window off-screen. See _usable_geometry.
+            geo = self._usable_geometry(data.get("geometry"))
+            if geo:
                 self.geometry(geo)
             self._pending_maximized = data.get("maximized", False)
             # font_size: accept only an int in the same 7..20 range the UI
@@ -9991,7 +10485,7 @@ class ScannerApp(tk.Tk):
         try:
             data = {}
             if SETTINGS_FILE.exists():
-                with open(SETTINGS_FILE, "r") as f:
+                with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                     data = json.load(f)
             if not isinstance(data, dict):
                 # Valid JSON but not an object (e.g. ``[]``/``null``):
@@ -10019,7 +10513,7 @@ class ScannerApp(tk.Tk):
         try:
             data = {}
             if SETTINGS_FILE.exists():
-                with open(SETTINGS_FILE, "r") as f:
+                with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                     data = json.load(f)
             if not isinstance(data, dict):
                 _log.warning("settings file is valid JSON but not a dict "

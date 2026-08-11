@@ -33,7 +33,6 @@ import logging
 import os
 import shutil
 import sys
-import tempfile
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,6 +50,25 @@ else:
 DEFAULT_FILE_NAME = "etf_holdings.json"
 DEFAULT_WRITABLE_PATH = _RUNTIME_DIR / DEFAULT_FILE_NAME
 BUNDLED_BASELINE_PATH = _BUNDLED_DIR / DEFAULT_FILE_NAME
+
+# See scan_sec._open_exclusive_temp for the full rationale. Local copy
+# because scan_sec imports THIS module (importing it back would be a cycle).
+_TEMP_NAME_ATTEMPTS = 5
+
+
+def _open_exclusive_temp(path: Path, prefix: str = ".tmp_"):
+    """Create a uniquely-named temp file in ``path``'s directory and return
+    ``(fd, tmp_path)``. Bounded, unlike ``tempfile.mkstemp``, which on
+    Windows loops ~2.1 billion times without raising when the directory is
+    write-denied by ACL (``os.access(W_OK)`` ignores ACLs)."""
+    for _ in range(_TEMP_NAME_ATTEMPTS):
+        cand = path.parent / ("%s%s.json" % (prefix, os.urandom(8).hex()))
+        try:
+            fd = os.open(cand, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            continue
+        return fd, cand
+    raise OSError("could not create a unique temp file in %s" % path.parent)
 
 # Minimum dominant-sector weight (percent) for a high-confidence sector
 # prefix. Below this the holdings are too diversified (or swap-dominated,
@@ -277,9 +295,10 @@ class EtfHoldings:
     @staticmethod
     def _write_atomic(path: Path, payload: dict) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(
-            prefix=".etfhold_", suffix=".json", dir=str(path.parent),
-        )
+        # See EtfMap._write_atomic / scan_sec._open_exclusive_temp: mkstemp
+        # spins forever instead of raising in an ACL-write-denied directory
+        # on Windows, because os.access(W_OK) ignores ACLs.
+        fd, tmp = _open_exclusive_temp(path, prefix=".etfhold_")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(payload, f, indent=2, sort_keys=True)

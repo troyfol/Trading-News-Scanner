@@ -36,7 +36,6 @@ import logging
 import os
 import shutil
 import sys
-import tempfile
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -56,6 +55,26 @@ else:
 DEFAULT_FILE_NAME = "single_stock_etfs.json"
 DEFAULT_WRITABLE_PATH = _RUNTIME_DIR / DEFAULT_FILE_NAME
 BUNDLED_BASELINE_PATH = _BUNDLED_DIR / DEFAULT_FILE_NAME
+
+# See scan_sec._open_exclusive_temp for the full rationale. Kept as a local
+# copy because scan_sec imports THIS module, so importing it back would be
+# a cycle.
+_TEMP_NAME_ATTEMPTS = 5
+
+
+def _open_exclusive_temp(path: Path, prefix: str = ".tmp_"):
+    """Create a uniquely-named temp file in ``path``'s directory and return
+    ``(fd, tmp_path)``. Bounded, unlike ``tempfile.mkstemp``, which on
+    Windows loops ~2.1 billion times without raising when the directory is
+    write-denied by ACL (``os.access(W_OK)`` ignores ACLs)."""
+    for _ in range(_TEMP_NAME_ATTEMPTS):
+        cand = path.parent / ("%s%s.json" % (prefix, os.urandom(8).hex()))
+        try:
+            fd = os.open(cand, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            continue
+        return fd, cand
+    raise OSError("could not create a unique temp file in %s" % path.parent)
 
 
 class EtfMap:
@@ -241,9 +260,13 @@ class EtfMap:
     @staticmethod
     def _write_atomic(path: Path, payload: dict) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(
-            prefix=".etfmap_", suffix=".json", dir=str(path.parent),
-        )
+        # Not tempfile.mkstemp: on Windows its retry loop treats a
+        # PermissionError as a name collision whenever os.access(dir, W_OK)
+        # is true, and os.access only inspects the read-only ATTRIBUTE, not
+        # the ACL. In an ACL-denied directory it spins range(TMP_MAX) (~54 h
+        # at 100% CPU) instead of raising. A bounded O_EXCL loop lets the
+        # PermissionError reach the caller immediately.
+        fd, tmp = _open_exclusive_temp(path, prefix=".etfmap_")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(payload, f, indent=2, sort_keys=True)

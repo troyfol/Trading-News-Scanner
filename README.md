@@ -23,6 +23,7 @@ The window watcher runs on a dedicated daemon thread with a stall watchdog, so a
 - **SEC filing awareness** — uses the modern `data.sec.gov/submissions` JSON API for all SEC lookups:
   - **Recency indicator** — color-coded by whether the company filed anything in the last 24 h (hot), 48 h (warm), or longer (cold). Click to open EDGAR.
   - **Shelf registration** — flags active S-3 filings. Click to view on EDGAR.
+  - **Unknown ≠ negative** — when SEC can't be reached, or no CIK resolves for the symbol, both indicators show an em-dash (`Shelf: —`, `SEC: —`) rather than asserting `Shelf: NO`. A transient SEC error is retried on the next symbol change instead of being remembered for the session.
 - **CIK resolution** — maps tickers to SEC CIK numbers via the official `sec.gov/files/company_tickers.json` endpoint with fuzzy name-matching fallback; cached locally.
 - **Market cap** — always shown in the header in a large font, optionally colored by a 5-tier stepped gradient (micro / small / mid / large / mega, bright-red → bright-green). The gradient toggle and all five tier colors are tunable in **Settings → Market Cap**.
 - **Float & short data** — shares float (toggleable via the **Float** checkbox, optionally colored by a low-float cutoff) and short-float percentage from Finviz. The cutoff, the low/high colors, and the coloration on/off toggle are tunable in **Settings → Float**.
@@ -32,18 +33,34 @@ The window watcher runs on a dedicated daemon thread with a stall watchdog, so a
 - **ETF coverage** — two indicators driven by JSON maps you can refresh from Settings:
   - **Single-stock ETF** — flags any active symbol covered by a leveraged / inverse single-stock ETF (and, when the symbol *is* one, what it tracks).
   - **Multi-holding ETFs** — a second **Held: N** indicator counts the sector / index / thematic / leveraged-index ETFs that hold the active stock as a top holding (click for the list). When the active symbol *is* one of those ETFs, the indicator turns blue with a high-confidence sector/strategy + leverage label (e.g. `ETF: Tech`, `ETF: 3X`), and hovering lists its current constituents. Holdings are sourced from [stockanalysis.com](https://stockanalysis.com); swap-based leveraged/inverse funds have their constituents recovered from the swap descriptions (via SEC name→ticker matching), falling back to a leverage-only badge when they can't be resolved.
-- **Quality-of-life** — keyword highlighting, time filters (Today / 48 h / All), live per-source status dots, clickable headlines, dark / light theme, adjustable font size, always-on-top, and persistent settings.
+- **Quality-of-life** — keyword highlighting, time filters (Today / 48 h / All), live per-source status dots, clickable headlines, dark / light theme, adjustable font size, always-on-top, and persistent settings. Window position is restored on launch and re-centred automatically if the monitor it was saved on is no longer attached.
+
+## Data integrity
+
+This is a trading tool, so the design bias throughout is **show nothing rather than show something wrong**:
+
+- **Quarters are never mixed.** The earnings row decides which quarter it is showing by whether the local parquet row and the live Finviz date describe the *same reporting event*, not by assuming consecutive quarters are far apart. A quarter the parquet hasn't ingested yet shows its own date and surprises with YoY left blank (then backfilled asynchronously) — it never borrows the previous quarter's YoY, period, or surprise.
+- **Rows that can't be true are discarded.** A parquet row whose fiscal period ends *after* the date it was reported is dropped rather than displayed, and genuine duplicates are resolved by report-lag plausibility and source preference rather than by file order.
+- **The chart shows the ticker in its title.** The earnings pop-out snapshots its symbol, CIK, and metadata when you open it, so changing charts mid-load can never merge another company's figures into it; a load whose symbol went stale is discarded.
+- **A bad data file degrades, it doesn't break.** The optional earnings parquet is validated and type-normalized once when loaded; a renamed column or a drifted dtype leaves the earnings row blank instead of silently stopping the news list from updating.
+- **Non-finite values never render.** `nan` / `inf` reaching a percentage or market-cap cell is treated as no-data rather than formatted as a magnitude.
 
 ## Requirements
 
 - **Windows only** — all editions use Windows APIs for symbol detection.
-- **Python 3.10+** (built and validated on 3.11).
+- **Python 3.10+** — built and validated on **3.10.11**; `requirements.txt` pins the exact build environment.
 
 ```bash
 pip install -r requirements.txt
 ```
 
 The default **TS** and **TV** modes need only `pywin32`. The **TITAN** mode additionally requires `comtypes` (UI Automation). `rapidfuzz` is optional — the code falls back to the stdlib `difflib` for CIK name-matching when it's absent.
+
+A headless smoketest covers construction/teardown, settings persistence, the URL allowlist, the EDGAR regex gates, and the data-integrity guarantees above:
+
+```bash
+venv\Scripts\python.exe _smoketest.py    # exit 0 = all green
+```
 
 ## Usage
 

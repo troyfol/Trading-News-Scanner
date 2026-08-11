@@ -1376,6 +1376,515 @@ def test_parquet_auto_reload_on_mtime_change():
                 pass
 
 
+# ----- 2026-08-11 audit fixes ------------------------------------------
+
+
+def test_finviz_field_caps_and_linear_date_parse():
+    """Scraped snapshot values are capped at the source, and
+    parse_earnings_date is linear (it used to backtrack quadratically over
+    an unbounded Finviz cell, on the Tk MAIN thread: 7.9 s at 20k chars,
+    ~150 h at the 5 MB body cap = a permanent freeze)."""
+    _hr("finviz field caps + linear earnings-date parse")
+    import scan_sec as mod
+    import time
+
+    f = mod.DataFetcher()
+    try:
+        # 1. Behaviour preserved for every documented form.
+        expected = {
+            "Mar 5": (3, 5), "Mar 5 AMC": (3, 5), "Mar 5 BMO": (3, 5),
+            "Mar 5 AH": (3, 5), "Mar 5/6": (3, 5), "Mar 5 - Mar 7": (3, 5),
+            "Mar 5, 2026": (3, 5), "3/5/2026": (3, 5),
+            "Feb 3-Feb 5": (2, 3), "Jan 30 AMC": (1, 30),
+        }
+        for text, (mo, day) in expected.items():
+            got = f.parse_earnings_date(text)
+            assert got is not None, f"{text!r} no longer parses"
+            assert (got.month, got.day) == (mo, day), \
+                f"{text!r} -> {got}, expected month/day {mo}/{day}"
+        for junk in ("", "   ", "-", "not a date"):
+            assert f.parse_earnings_date(junk) is None, \
+                f"{junk!r} should not parse"
+
+        # 2. Linear, not quadratic. The old regex was ~4x per doubling;
+        # assert the 64k case stays far under a frame.
+        hostile = "Jan 30" + " " * 64000 + "z"
+        t0 = time.perf_counter()
+        f.parse_earnings_date(hostile)
+        dt = time.perf_counter() - t0
+        assert dt < 0.5, (
+            f"parse_earnings_date took {dt:.2f}s on a 64k input — the "
+            "quadratic backtracking is back")
+
+        # 3. The scrape caps every snapshot value at the source.
+        class _Resp:
+            status_code = 200
+
+            def __init__(self, body):
+                self._b = body.encode()
+
+            def iter_content(self, chunk_size=65536):
+                for i in range(0, len(self._b), chunk_size):
+                    yield self._b[i:i + chunk_size]
+
+            def close(self):
+                pass
+
+        class _Sess:
+            def __init__(self, body):
+                self.body = body
+
+            def get(self, *a, **k):
+                return _Resp(self.body)
+
+        big = "9" * 50000
+        page = (
+            "<html><head><title>X - Evil Corp Stock</title></head><body>"
+            "<table class='snapshot-table2'>"
+            "<tr><td>Earnings</td><td>Jan 30" + " " * 30000 + "z</td>"
+            "<td>Market Cap</td><td>" + big + "</td></tr>"
+            "<tr><td>Shs Float</td><td>" + big + "</td>"
+            "<td>Rel Volume</td><td>" + big + "</td></tr>"
+            "<tr><td>Short Float</td><td>" + big + "</td>"
+            "<td>Earnings</td><td>Jan 30</td></tr>"
+            "</table></body></html>"
+        )
+        f.session = _Sess(page)
+        f.last_scrape_time = 0.0
+        t0 = time.perf_counter()
+        meta, _items = f.scrape_finviz("EVIL")
+        assert time.perf_counter() - t0 < 5.0, "scrape_finviz stalled"
+        for key in ("earnings", "mcap", "float", "rvol", "short"):
+            assert len(str(meta[key])) <= mod._FINVIZ_FIELD_MAX, (
+                f"meta[{key!r}] is {len(str(meta[key]))} chars — the "
+                f"{mod._FINVIZ_FIELD_MAX}-char source cap is not applied")
+        # And the capped value still parses to the right date.
+        assert f.parse_earnings_date(meta["earnings"]).day == 30
+    finally:
+        f.close()
+    print("finviz field caps + linear parse OK")
+
+
+def test_atomic_write_fails_fast_when_dir_denied():
+    """_atomic_write_json must RAISE on a write-denied directory, not spin.
+    tempfile.mkstemp loops range(TMP_MAX)=2.1e9 (~54 h at 100% CPU) there,
+    because Windows os.access(W_OK) ignores ACLs — so the callers'
+    ``except OSError`` never fired and the GUI just hung."""
+    _hr("atomic write fails fast on a denied directory")
+    import scan_sec as mod
+    import etf_map as em
+    import etf_holdings as eh
+    import json as _json
+    import time
+    import tempfile
+
+    d = Path(tempfile.mkdtemp())
+    try:
+        # Round-trip still works.
+        target = d / "settings.json"
+        payload = {"a": 1, "unicode": "café"}
+        mod._atomic_write_json(target, payload)
+        assert _json.loads(target.read_text(encoding="utf-8")) == payload
+        assert not [p for p in d.iterdir() if p.name.endswith(".tmp")], \
+            "atomic write left a stray temp file"
+
+        # Denied directory -> immediate raise, from all three writers.
+        real_open = os.open
+
+        def denying_open(path, flags, *a, **k):
+            if flags & os.O_CREAT:
+                raise PermissionError(13, "Permission denied (simulated ACL)")
+            return real_open(path, flags, *a, **k)
+
+        cases = (
+            ("scan_sec", lambda: mod._atomic_write_json(d / "x.json", {"x": 1})),
+            ("etf_map", lambda: em._open_exclusive_temp(d / "x.json", ".etfmap_")),
+            ("etf_holdings", lambda: eh._open_exclusive_temp(d / "x.json", ".etfhold_")),
+        )
+        for label, fn in cases:
+            os.open = denying_open
+            t0 = time.perf_counter()
+            try:
+                fn()
+                raise AssertionError(
+                    f"{label} write returned instead of raising on a "
+                    "denied directory")
+            except OSError:
+                pass
+            finally:
+                os.open = real_open
+            dt = time.perf_counter() - t0
+            assert dt < 1.0, (
+                f"{label} took {dt:.1f}s to fail — it is still spinning "
+                "instead of propagating PermissionError")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    print("atomic write fail-fast OK")
+
+
+def test_parquet_schema_drift_is_contained():
+    """A drifted sibling parquet must degrade to a blank earnings row —
+    never raise into the Tk callback that repaints the news list.
+
+    Before: the live resolver was called bare (only the historical branch
+    was wrapped), so a renamed/objected/tz-aware report_date unwound
+    through update_full_data and skipped refresh_ui() +
+    _set_last_refreshed_now() on the following lines."""
+    _hr("parquet schema drift is contained")
+    import scan_sec as mod
+    import pandas as pd
+
+    coerce = mod.ScannerApp._coerce_parquet
+
+    # 1. Load boundary: reject what can't be used, normalize what can.
+    assert coerce(pd.DataFrame({"ticker": ["A"]}), "p") is None, \
+        "a frame with no report_date must be rejected at load"
+    tz = coerce(pd.DataFrame({
+        "ticker": ["A"],
+        "report_date": pd.to_datetime(["2026-01-01"]).tz_localize("UTC"),
+    }), "p")
+    assert getattr(tz["report_date"].dtype, "tz", None) is None, \
+        "tz-aware report_date must be made naive at the load boundary"
+    strs = coerce(pd.DataFrame({
+        "ticker": ["A"], "report_date": ["2026-01-01"],
+        "surprise_eps_pct": ["n/a"],
+    }), "p")
+    assert str(strs["report_date"].dtype).startswith("datetime64"), \
+        "string report_date must be coerced to datetime"
+    assert pd.isna(strs["surprise_eps_pct"].iloc[0]), \
+        "non-numeric value column must coerce to NaN, not raise later"
+
+    # 2. Even if a drifted frame reaches the resolver, the repaint holds.
+    app = _make_app()
+    try:
+        bad = pd.DataFrame({"ticker": ["ZZZZ"], "close": [1.0]})   # no report_date
+        app._earnings_db_full_cache = bad
+        app._earnings_tickers_cache = None
+        app.current_symbol = "ZZZZ"
+        app.current_meta = {"earnings": "Jan 30"}
+        app.var_earnings.set(True)
+        reached = []
+        app.refresh_ui = lambda *a, **k: reached.append("refresh_ui")
+        app._set_last_refreshed_now = lambda *a, **k: reached.append("stamp")
+        # The exact call chain the failure took: update_full_data ->
+        # refresh_meta_label -> _resolve_earnings_display.
+        app.update_full_data("ZZZZ", {"earnings": "Jan 30"}, [], None, None, None)
+        assert "refresh_ui" in reached, (
+            "update_full_data aborted before refresh_ui — the news list "
+            "would be blank")
+        assert "stamp" in reached, (
+            "update_full_data aborted before the Last Refreshed stamp")
+    finally:
+        _teardown(app)
+    print("parquet schema drift contained OK")
+
+
+def test_refresh_button_always_released():
+    """The refresh button has exactly one re-enable site; every exit path
+    must reach it. Two paths used to strand it disabled forever (a
+    disabled tk.Button cannot be clicked, so there is no recovery):
+    the stale-generation early returns, and an exception in the finisher."""
+    _hr("refresh button is always released")
+    app = _make_app()
+    try:
+        calls = []
+        app.after = lambda ms, fn=None, *a: (calls.append(fn), fn and fn())[0]
+
+        # Path A: symbol changes mid-refresh (bumps _fetch_gen).
+        app.btn_refresh.config(state="disabled", text="…")
+        app.fetcher.rss_worker.fetch_feeds = lambda **k: ([], True)
+        app.fetcher.rss_worker.merge_into_cache = lambda items: []
+        app._fetch_gen = 99
+        app._do_manual_refresh("AAPL", 1)      # gen 1 != 99 -> early return
+        assert str(app.btn_refresh["state"]) == "normal", (
+            "stale-generation return left the refresh button disabled")
+
+        # Path B: the finisher raises.
+        app.btn_refresh.config(state="disabled", text="…")
+
+        def boom(*a, **k):
+            raise KeyError("headline")
+
+        app.update_full_data = boom
+        app.current_symbol = "AAPL"
+        app._finish_manual_refresh("AAPL", {}, [], None, None, None)
+        assert str(app.btn_refresh["state"]) == "normal", (
+            "an exception in _finish_manual_refresh left the button disabled")
+        assert app.btn_refresh["text"] == "↻", "button label not restored"
+    finally:
+        _teardown(app)
+    print("refresh button release OK")
+
+
+def test_chart_load_uses_snapshotted_cik_and_meta():
+    """The chart loader must take cik/meta as parameters and never read
+    self.current_cik / self.current_meta. Reading them live let a symbol
+    change mid-load merge another company's EDGAR + Finviz numbers into
+    the charted ticker's rows, with no marker."""
+    _hr("chart load uses snapshotted cik + meta")
+    import scan_sec as mod
+    import inspect
+
+    sig = inspect.signature(mod.ScannerApp._load_chart_data_with_gap_fill)
+    for p in ("cik", "finviz_meta"):
+        assert p in sig.parameters, (
+            f"_load_chart_data_with_gap_fill lost its {p!r} parameter — the "
+            "worker would read live app state again")
+    # AST, not substring: the docstring legitimately NAMES these
+    # attributes when explaining why they must not be read here.
+    import ast
+    import textwrap
+    tree = ast.parse(textwrap.dedent(
+        inspect.getsource(mod.ScannerApp._load_chart_data_with_gap_fill)))
+    banned = {"current_cik", "current_meta"}
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Attribute)
+                and node.attr in banned
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "self"):
+            raise AssertionError(
+                f"self.{node.attr} is read at line {node.lineno} of the "
+                "off-thread chart loader — it must be snapshotted on the "
+                "Tk thread and passed in")
+
+    # A stale load must be dropped rather than rendered under the new
+    # ticker's name.
+    app = _make_app()
+    try:
+        rendered = []
+        app._render_earnings_chart_window = lambda *a, **k: rendered.append(a)
+        app._show_dates_only_popup = lambda *a, **k: rendered.append(a)
+        app._show_no_earnings_data_popup = lambda *a, **k: rendered.append(a)
+        app._chart_gen = 7
+        app._finish_open_earnings_chart(
+            "AAPL", None, None, None, "", None, chart_gen=6)
+        assert not rendered, "a stale chart load was rendered anyway"
+        # The current generation still renders.
+        app._finish_open_earnings_chart(
+            "AAPL", None, None, None, "", None, chart_gen=7)
+        assert rendered, "the current-generation chart load was dropped"
+    finally:
+        _teardown(app)
+    print("chart snapshot + generation guard OK")
+
+
+def test_new_quarter_detected_by_report_proximity():
+    """Quarter identity must come from same-event proximity, not from a
+    50-day cadence assumption. 3.88% of real consecutive quarters report
+    <=50 days apart, and each one produced a row mixing this quarter's
+    date+surprise with last quarter's YoY and period_ending."""
+    _hr("new-quarter detection by report proximity")
+    import scan_sec as mod
+    import pandas as pd
+    from datetime import date, timedelta
+
+    app = _make_app()
+    try:
+        today = date.today()
+        fv_day = today - timedelta(days=1)
+        # Parquet is one quarter behind, only 36 days back (ICLR's real
+        # cadence). The old >50-day rule called this the SAME quarter.
+        stale_rd = pd.Timestamp(fv_day) - pd.Timedelta(days=36)
+        df = pd.DataFrame({
+            "ticker": ["TEST"],
+            "report_date": [stale_rd],
+            "period_ending": [stale_rd - pd.Timedelta(days=40)],
+            "surprise_eps_pct": [4.0], "surprise_rev_pct": [5.0],
+            "yoy_eps_pct": [-44.0], "yoy_rev_pct": [-33.0],
+            "source": ["finviz"], "report_date_proxy": [False],
+        })
+        app._earnings_db_full_cache = df
+        app._earnings_tickers_cache = None
+        meta = {
+            "earnings": fv_day.strftime("%b %d"),
+            "eps_surprise": "300.00%", "sales_surprise": "250.00%",
+        }
+        res = app._resolve_earnings_display("TEST", meta)
+        assert res is not None, "resolver returned nothing"
+        assert res["eps_yoy"] is None and res["rev_yoy"] is None, (
+            "borrowed the PREVIOUS quarter's YoY onto a new quarter "
+            f"(got {res['eps_yoy']}/{res['rev_yoy']})")
+        assert res["period_ending"] is None, (
+            "borrowed the previous quarter's period_ending")
+        assert res.get("needs_finviz_yoy"), (
+            "new quarter must request the async ty=ea YoY backfill")
+
+        # Same event (parquet is current) still borrows normally.
+        df.loc[0, "report_date"] = pd.Timestamp(fv_day)
+        app._earnings_db_full_cache = df
+        res2 = app._resolve_earnings_display("TEST", meta)
+        assert res2["eps_yoy"] == -44.0, (
+            "a same-quarter row must still supply YoY "
+            f"(got {res2['eps_yoy']})")
+    finally:
+        _teardown(app)
+    print("new-quarter detection OK")
+
+
+def test_impossible_periods_and_tie_break():
+    """Rows whose period_ending post-dates their report_date are corrupt
+    and must be dropped; genuine ties must break on report-lag
+    plausibility then source preference, not on parquet row order."""
+    _hr("impossible periods dropped + deterministic tie-break")
+    import scan_sec as mod
+    import pandas as pd
+
+    App = mod.ScannerApp
+    frame = pd.DataFrame({
+        "ticker": ["A", "A"],
+        "report_date": [pd.Timestamp("2024-08-20")] * 2,
+        # First row is impossible (period ends AFTER the report).
+        "period_ending": [pd.Timestamp("2024-12-01"),
+                          pd.Timestamp("2024-06-01")],
+        "surprise_eps_pct": [640.26, 78.0],
+        "source": ["finnhub", "finviz"],
+    })
+    kept = App._drop_impossible_periods(frame)
+    assert len(kept) == 1, f"expected 1 sane row, got {len(kept)}"
+    assert kept.iloc[0]["surprise_eps_pct"] == 78.0, (
+        "kept the impossible row (period_ending after report_date)")
+
+    # Missing values must not be dropped (nothing to contradict).
+    with_nat = pd.DataFrame({
+        "report_date": [pd.Timestamp("2024-08-20")],
+        "period_ending": [pd.NaT],
+    })
+    assert len(App._drop_impossible_periods(with_nat)) == 1
+
+    # Tie-break: equal distance, both plausible -> source preference wins.
+    tied = pd.DataFrame({
+        "report_date": [pd.Timestamp("2024-08-20")] * 2,
+        "period_ending": [pd.Timestamp("2024-06-30")] * 2,
+        "surprise_eps_pct": [1.0, 2.0],
+        "source": ["finnhub", "finviz"],
+    })
+    dist = (tied["report_date"] - pd.Timestamp("2024-08-20")).abs()
+    ranked = App._rank_rows_by(tied, dist)
+    assert ranked.iloc[0]["source"] == "finviz", (
+        "tie-break ignored the finviz > zacks > finnhub source preference")
+
+    # A frame with no period_ending/source columns must still rank.
+    bare = pd.DataFrame({"report_date": [pd.Timestamp("2024-08-20")]})
+    assert len(App._rank_rows_by(
+        bare, (bare["report_date"] - pd.Timestamp("2024-08-20")).abs())) == 1
+    print("impossible periods + tie-break OK")
+
+
+def test_sec_unknown_is_not_asserted_as_negative():
+    """An unanswered SEC request must render "Shelf: —" / "SEC: —", not
+    the positive assertions "Shelf: NO" / "SEC: >48h". And a transient
+    5xx must NOT be negative-cached for the session."""
+    _hr("SEC unknown state is not asserted as a negative")
+    import scan_sec as mod
+
+    # 1. Transient statuses are not cached; permanent ones are.
+    class _R:
+        def __init__(self, code):
+            self.status_code = code
+
+        def iter_content(self, chunk_size=65536):
+            yield b"{}"
+
+        def close(self):
+            pass
+
+    class _S:
+        def __init__(self, code):
+            self.code = code
+            self.calls = 0
+
+        def get(self, *a, **k):
+            self.calls += 1
+            return _R(self.code)
+
+    for code, should_cache in ((503, False), (429, False), (404, True)):
+        f = mod.DataFetcher()
+        try:
+            f.session = _S(code)
+            f._fetch_submissions("0000320193")
+            cached = "0000320193" in f._submissions_cache
+            assert cached is should_cache, (
+                f"HTTP {code}: cached={cached}, expected {should_cache}")
+            if not should_cache:
+                # A retry must actually go back out to SEC.
+                f._fetch_submissions("0000320193")
+                assert f.session.calls == 2, (
+                    f"HTTP {code} was not retried — the session is poisoned")
+            # The status light must never read OK off a failure.
+            assert f.sec_status == "ERR", (
+                f"sec_status={f.sec_status!r} after HTTP {code}")
+        finally:
+            f.close()
+
+    # 2. scrape_sec_data reports unknown as None, not False/2.
+    f = mod.DataFetcher()
+    try:
+        has_s3, recent, _re = f.scrape_sec_data("AAPL", None)
+        assert has_s3 is None and recent is None, (
+            f"no CIK should be unknown, got has_s3={has_s3!r} "
+            f"recent={recent!r}")
+    finally:
+        f.close()
+
+    # 3. The render shows an em-dash for unknown.
+    app = _make_app()
+    try:
+        app.current_symbol = "AAPL"
+        app.update_full_data("AAPL", {}, [], None, None, None)
+        assert "—" in app.lbl_shelf["text"], (
+            f"unknown shelf rendered as {app.lbl_shelf['text']!r}")
+        assert "—" in app.lbl_sec_recent["text"], (
+            f"unknown SEC recency rendered as {app.lbl_sec_recent['text']!r}")
+        # A real negative still renders as a negative.
+        app.update_full_data("AAPL", {}, [], False, 2, None)
+        assert "NO" in app.lbl_shelf["text"], "a real negative was lost"
+    finally:
+        _teardown(app)
+    print("SEC unknown state OK")
+
+
+def test_geometry_clamped_to_visible_desktop():
+    """A geometry saved on a monitor that has since been unplugged must
+    not reopen the window off-screen (the app then reads as 'failed to
+    launch'). Shape validation alone never caught this — an off-screen
+    geometry is perfectly legal Tk, so the except TclError fallback around
+    it is dead code for this input."""
+    _hr("geometry clamped to the visible desktop")
+    app = _make_app()
+    try:
+        vx, vy = app.winfo_vrootx(), app.winfo_vrooty()
+        vw, vh = app.winfo_vrootwidth(), app.winfo_vrootheight()
+
+        onscreen = "1200x800+%d+%d" % (vx + 100, vy + 100)
+        assert app._usable_geometry(onscreen) == onscreen, \
+            "an on-screen geometry was rejected"
+
+        # Far off the left/top of the virtual desktop -> size only.
+        off = "800x600+%d+%d" % (vx - 9000, vy - 9000)
+        assert app._usable_geometry(off) == "800x600", (
+            f"off-screen geometry {off!r} was restored verbatim")
+        # Far off the right.
+        off_r = "800x600+%d+50" % (vx + vw + 5000)
+        assert app._usable_geometry(off_r) == "800x600", \
+            "off-right geometry was restored verbatim"
+
+        # Size-only and malformed inputs behave.
+        assert app._usable_geometry("1000x940") == "1000x940"
+        for bad in ("garbage", "", None, 123, "12x"):
+            assert app._usable_geometry(bad) is None, \
+                f"{bad!r} should be rejected outright"
+
+        # The legitimate multi-monitor negative-coordinate form still
+        # round-trips when that monitor is present.
+        if vx < 0:
+            neg = "1200x800+%d+%d" % (vx + 50, vy + 50)
+            assert app._usable_geometry(neg) == neg, \
+                "a valid negative-coordinate geometry was clamped away"
+    finally:
+        _teardown(app)
+    print("geometry clamp OK")
+
+
 # ----- main ------------------------------------------------------------
 
 
@@ -1407,6 +1916,16 @@ def main():
     test_parquet_auto_reload_on_mtime_change()
     test_cik_resolver_close_joins_refresh_thread()
     test_app_repeated_construct_destroy_is_safe()
+    # 2026-08-11 audit fixes (3 high + 10 medium)
+    test_finviz_field_caps_and_linear_date_parse()
+    test_atomic_write_fails_fast_when_dir_denied()
+    test_parquet_schema_drift_is_contained()
+    test_refresh_button_always_released()
+    test_chart_load_uses_snapshotted_cik_and_meta()
+    test_new_quarter_detected_by_report_proximity()
+    test_impossible_periods_and_tie_break()
+    test_sec_unknown_is_not_asserted_as_negative()
+    test_geometry_clamped_to_visible_desktop()
     # Reap the final Tk root on the main thread before the process exits,
     # so interpreter-shutdown GC has no leftover root to finalize on the
     # wrong thread (which would abort with Tcl_AsyncDelete after we've

@@ -1,31 +1,53 @@
-# MorningScanner runtime dependencies, pinned to the validated build
-# environment (Python 3.11) as of the 2026-06-09 hardening pass.
+# MorningScanner runtime dependencies.
 #
-# Rebuild the exe from an environment matching these pins so a rebuild
+# These pins are the ACTUAL contents of the environment the shipped
+# TNS.exe is built from (Python 3.10.11, local `venv/`), captured
+# 2026-08-11. Rebuild from an environment matching these so a rebuild
 # can't silently ship untested library versions.
+#
+# (The previous version of this file listed versions that were never in
+# the build venv — 11 of 13 pins were wrong and it claimed Python 3.11.
+# Anyone rebuilding from it got a materially different binary, across
+# exactly the libraries the earnings pipeline depends on.)
 
 # --- Core ---
-requests==2.32.5
-beautifulsoup4==4.13.4
-soupsieve==2.7           # beautifulsoup4 dependency (pinned for reproducibility)
-lxml==6.0.2             # optional bs4 parser backend
-pywin32==304            # win32gui / pythoncom — TS/TV watchers + COM init
-keyring==25.7.0         # Polygon API key in Windows Credential Manager
-pyarrow==21.0.0         # earnings parquet read
-pandas==2.2.3
-numpy==2.0.2
-matplotlib==3.10.0      # earnings-chart popup (TkAgg)
-feedparser==6.0.12      # RSS wires
-sgmllib3k==1.0.0        # feedparser dependency
-tzdata==2025.2          # zoneinfo (ET wire dating)
+requests==2.33.1
+beautifulsoup4==4.14.3
+soupsieve==2.8.3         # beautifulsoup4 dependency (pinned for reproducibility)
+pywin32==311             # win32gui / pythoncom — TS/TV watchers + COM init
+keyring==25.7.0          # Polygon API key in Windows Credential Manager
+pyarrow==24.0.0          # earnings parquet read
+pandas==2.3.3
+numpy==2.2.6
+matplotlib==3.10.9       # earnings-chart popup (TkAgg)
+feedparser==6.0.12       # RSS wires
+sgmllib3k==1.0.0         # feedparser dependency
+tzdata==2026.2           # zoneinfo (ET wire dating)
 
-# --- Conditional / optional ---
+# --- Transitively required (pinned because they ship inside the exe) ---
+certifi==2026.2.25       # TLS trust store — bundled, so its age is ours
+urllib3==2.6.3
+charset-normalizer==3.4.7
+idna==3.11
+
+# --- Optional, but PRESENT in the build venv and bundled by TNS.spec ---
 # rapidfuzz: faster CIK name matching. The code falls back to the stdlib
-# `difflib` when it is absent (CIKResolver._ratio), so it is NOT required
-# for correctness — only speed.
-# rapidfuzz==3.*
+# `difflib` when it is absent (CIKResolver._ratio), so it is not required
+# for correctness — only speed. It IS installed here and listed in the
+# spec's hiddenimports, so the shipped exe uses it.
+rapidfuzz==3.14.5
 #
 # comtypes: required ONLY for the TITAN UIA watch mode (TitanWindowWatcher).
-# The default TS mode (win32gui) and TV mode need only pywin32. Install it
-# (and re-add it to the spec's hiddenimports) if TITAN mode must ship.
-# comtypes==1.*
+# The default TS mode (win32gui) and TV mode need only pywin32. It IS
+# installed here, and TNS.spec bundles it plus the pre-generated
+# comtypes/gen wrappers, so TITAN mode works in the shipped exe.
+comtypes==1.4.16
+
+# --- Build-time only ---
+# pyinstaller==6.19.0    # `pyinstaller TNS.spec` — not a runtime dependency
+#
+# NOTE: lxml is NOT required and NOT installed. Every HTML parse in this
+# project uses the stdlib "html.parser" backend (scan_sec.py, etf_scraper.py),
+# measured at ~1.26x slower than lxml on a real quote page — not worth the
+# differing malformed-markup behaviour on a scraper whose output feeds
+# numbers a trader reads.
