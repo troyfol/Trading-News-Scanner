@@ -19,7 +19,7 @@ The window watcher runs on a dedicated daemon thread with a stall watchdog, so a
 ## Features
 
 - **Automatic symbol detection** — reads the active ticker from your trading-platform window in real time; no manual input. Polls continuously with a short debounce.
-- **News aggregation** — combines headlines from Finviz, GlobeNewswire, PRNewswire, and Yahoo Finance into a single chronological feed (RSS, refreshed on a timer).
+- **News aggregation** — combines headlines from Finviz, PRNewswire, Stocktitan, and Yahoo Finance into a single chronological feed (RSS, refreshed on a timer). Each wire has its own status dot, and a feed whose origin goes dark is automatically taken out of rotation rather than being allowed to slow the healthy ones down (see [Wire resilience](#wire-resilience)).
 - **SEC filing awareness** — uses the modern `data.sec.gov/submissions` JSON API for all SEC lookups:
   - **Recency indicator** — color-coded by whether the company filed anything in the last 24 h (hot), 48 h (warm), or longer (cold). Click to open EDGAR.
   - **Shelf registration** — flags active S-3 filings. Click to view on EDGAR.
@@ -34,6 +34,19 @@ The window watcher runs on a dedicated daemon thread with a stall watchdog, so a
   - **Single-stock ETF** — flags any active symbol covered by a leveraged / inverse single-stock ETF (and, when the symbol *is* one, what it tracks).
   - **Multi-holding ETFs** — a second **Held: N** indicator counts the sector / index / thematic / leveraged-index ETFs that hold the active stock as a top holding (click for the list). When the active symbol *is* one of those ETFs, the indicator turns blue with a high-confidence sector/strategy + leverage label (e.g. `ETF: Tech`, `ETF: 3X`), and hovering lists its current constituents. Holdings are sourced from [stockanalysis.com](https://stockanalysis.com); swap-based leveraged/inverse funds have their constituents recovered from the swap descriptions (via SEC name→ticker matching), falling back to a leverage-only badge when they can't be resolved.
 - **Quality-of-life** — keyword highlighting, time filters (Today / 48 h / All), live per-source status dots, clickable headlines, dark / light theme, adjustable font size, always-on-top, and persistent settings. Window position is restored on launch and re-centred automatically if the monitor it was saved on is no longer attached.
+
+## Wire resilience
+
+News origins fail in a way that's easy to miss: they accept the connection and then simply never answer. One such feed used to cost the app three retries × the request timeout on *every* cycle — and because a cycle waits for its slowest feed, that delayed the healthy wires and blocked every manual refresh by the same amount.
+
+- **A dark origin is taken out of rotation.** After a few consecutive failures the feed is skipped entirely and re-probed once (single attempt) every ~10 minutes. A successful probe closes the circuit immediately, so recovery is automatic — no restart.
+- **`429` is treated as an instruction, not a failure.** A rate-limited origin trips the breaker on the *first* response and is left alone for exactly the `Retry-After` it asked for. Retrying through a 429 only restarts the limiter's window.
+- **Per-feed poll floors.** Origins rate-limit at very different rates, so each feed carries its own minimum interval. Stocktitan is polled every 5 minutes rather than every 60 seconds; its pulls are ~100 items deep, so nothing is missed.
+- **Short timeouts.** Every healthy feed answers in well under a second, so the request timeout is 6 s — a longer one only buys latency when an origin goes dark.
+
+Net effect: one dead source costs you one grey/red dot, not slower news everywhere.
+
+> **Note on GlobeNewswire:** it was replaced by Stocktitan on 2026-08-11. Its edge began completing the TLS handshake and then never responding — every path on the host, including the homepage, read-timed-out, and a VPN made no difference. Stocktitan also carries a ticker in ~94% of its headlines (vs ~37% for the other wires), which is what the per-symbol news filter matches on.
 
 ## Data integrity
 
@@ -119,7 +132,7 @@ This bundles Tcl/Tk, the `single_stock_etfs.json` + `etf_holdings.json` seeds, a
 | --- | --- |
 | [Finviz](https://finviz.com) | Company name, float, short interest, market cap, relative volume, earnings date, EPS / sales surprise, catalyst text |
 | [SEC EDGAR](https://data.sec.gov) | CIK mapping, filing recency, S-3 shelf registration, XBRL company-facts (via the `submissions` / `companyfacts` JSON APIs) |
-| [GlobeNewswire](https://www.globenewswire.com) · [PRNewswire](https://www.prnewswire.com) · [Yahoo Finance](https://finance.yahoo.com) | Press-release and market-news headlines (RSS) |
+| [PRNewswire](https://www.prnewswire.com) · [Stocktitan](https://www.stocktitan.net) · [Yahoo Finance](https://finance.yahoo.com) | Press-release and market-news headlines (RSS) |
 | [Polygon](https://polygon.io) | Optional historical news for the Historical Lookup |
 | [stockanalysis.com](https://stockanalysis.com) | Multi-holding ETF holdings, sector mix, and category for the ETF indicators (refreshed from Settings) |
 

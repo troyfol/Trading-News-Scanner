@@ -653,22 +653,71 @@ class RSSWorker:
     # the effective success rate back to ~100%.
     WIRE_ATTEMPTS = 3
     WIRE_RETRY_BACKOFF = 0.6  # seconds between attempts
+    # Per-request timeout. Every healthy feed answers in well under 1s
+    # (measured: PR 0.15s, YH 0.11s, ST 0.20s), so a long timeout buys
+    # nothing but latency when an origin goes dark — and it is paid
+    # WIRE_ATTEMPTS times, on the path a manual refresh blocks on.
+    WIRE_TIMEOUT = 6.0
     # Consecutive failed cycles before a wire indicator turns red. One
     # transient miss (already rare once retries are in) shouldn't flash
     # the indicator red for a whole 60s cycle.
     FAIL_STREAK_TO_ERR = 2
+    # --- circuit breaker -------------------------------------------------
+    # A feed whose origin has gone dark costs WIRE_ATTEMPTS x WIRE_TIMEOUT
+    # on EVERY cycle, and fetch_feeds waits for the slowest feed — so one
+    # dead origin delays the healthy ones and blocks every manual refresh.
+    # After CIRCUIT_TRIP_FAILURES consecutive failed cycles the feed is
+    # skipped entirely, and only re-probed (once, single-attempt) after
+    # CIRCUIT_COOLDOWN. A successful probe closes the circuit immediately,
+    # so recovery is automatic and needs no restart.
+    CIRCUIT_TRIP_FAILURES = 3
+    CIRCUIT_COOLDOWN = 600.0  # 10 minutes between probes while open
+    # An origin that answers 429 is EXPLICITLY telling us to stop, which
+    # is different from a transient failure: trip the circuit on the
+    # first one rather than after CIRCUIT_TRIP_FAILURES, and honour its
+    # Retry-After when it gives one (clamped so a hostile/absurd value
+    # can't park a feed for a day).
+    RETRY_AFTER_MAX = 3600.0
+    RETRY_AFTER_FALLBACK = 300.0
+
+    # Single source of truth for the wire feeds. The status indicators in
+    # the UI are built from these codes, so adding/removing a feed here
+    # cannot leave the indicator row out of sync.
+    #
+    # Third element is the minimum seconds between pulls of THAT feed.
+    # 0 = every cycle (the 60s loop). Some origins rate-limit far more
+    # tightly than others and polling them on the default cadence just
+    # parks them in a 429 penalty box, which shows up as a permanently
+    # red indicator — the exact failure this roster was changed to fix.
+    FEEDS = (
+        ("PR", "https://www.prnewswire.com/rss/news-releases-list.rss", 0.0),
+        # Replaced GlobeNewswire 2026-08-11: its edge (Akamai) began
+        # accepting the TLS handshake and then never answering — every
+        # path on the host, including the homepage, read-timed-out. Not
+        # an IP block (a VPN made no difference) and not a stale URL.
+        # Stocktitan carries ~94% ticker-in-headline vs ~37% for the
+        # other wires, so it feeds the per-symbol filter far better —
+        # but it rate-limits aggressively (nginx, observed Retry-After
+        # 208s, and 65s-spaced pulls still 429'd), so it gets a 5-minute
+        # floor. Its 100-item pulls are ~15x deeper than the 60s loop
+        # needs anyway, so nothing is actually missed.
+        ("ST", "https://www.stocktitan.net/rss/", 300.0),
+        ("YH", "https://finance.yahoo.com/news/rssindex", 0.0),
+    )
 
     def __init__(self):
         self.running = False
-        self.feeds = [
-            ("GB", "https://www.globenewswire.com/RssFeed/orgclass/1/feedTitle/GlobeNewswire%20-%20News%20about%20Public%20Companies"),
-            ("PR", "https://www.prnewswire.com/rss/news-releases-list.rss"),
-            ("YH", "https://finance.yahoo.com/news/rssindex")
-        ]
+        # (code, url) pairs; per-feed minimum interval kept alongside.
+        self.feeds = [(c, u) for c, u, _iv in self.FEEDS]
+        self._min_interval = {c: iv for c, _u, iv in self.FEEDS}
+        self._last_pull_at = {c: 0.0 for c, _u, _iv in self.FEEDS}
         self.statuses = {code: None for code, url in self.feeds}
         # Consecutive-failure count per feed, driving the ERR hysteresis
         # in ``_apply_status``. Any success resets it immediately.
         self._fail_streaks = {code: 0 for code, url in self.feeds}
+        # Circuit breaker: monotonic deadline before which a feed is
+        # skipped entirely. 0.0 = closed (fetch normally).
+        self._circuit_until = {code: 0.0 for code, url in self.feeds}
         # Serialize cache read-modify-write between the 60s loop and any
         # manual refresh (C3). Independent of the fetch dedupe lock.
         self._cache_lock = threading.Lock()
@@ -682,35 +731,69 @@ class RSSWorker:
         self._items_mirror: list = []
         self._items_loaded = False
     
-    _SOURCE_LABELS = {"YH": "Yahoo", "PR": "PRNew", "GB": "Globe"}
+    _SOURCE_LABELS = {"YH": "Yahoo", "PR": "PRNew", "ST": "STitn",
+                      # Retired 2026-08-11 (see FEEDS). Kept so items
+                      # still in the on-disk cache keep their label until
+                      # they age past the 7-day cutoff.
+                      "GB": "Globe"}
 
-    def _fetch_one(self, code, url):
-        """Fetch and parse a single feed. Returns (code, status, items)."""
+    def _fetch_one(self, code, url, attempts=None):
+        """Fetch and parse a single feed.
+
+        Returns ``(code, status, items, retry_after)`` where ``retry_after``
+        is the origin's requested back-off in seconds (from a 429) or None.
+
+        ``attempts`` overrides WIRE_ATTEMPTS — the circuit breaker's
+        half-open probe passes 1 so a still-dead origin costs one timeout
+        rather than the full retry ladder."""
+        attempts = self.WIRE_ATTEMPTS if attempts is None else attempts
         source = self._SOURCE_LABELS.get(code, "Wire")
         # Retry before giving up: wire origins bot-filter an occasional
         # request (see WIRE_ATTEMPTS). Failures are logged with the feed
         # code + reason only — never the URL.
         raw = None
         last_why = ""
-        for attempt in range(1, self.WIRE_ATTEMPTS + 1):
+        retry_after = None   # seconds the origin asked us to wait, if any
+        tried = 0            # actual attempts made (a 429 breaks out early)
+        for attempt in range(1, attempts + 1):
+            tried = attempt
+            r = None
             try:
                 # stream=True + _read_capped: bound the RSS body so a hostile/
                 # compromised feed origin (or a TLS-MITM) can't balloon-load
                 # the always-on RSS daemon's memory every 60s.
-                r = requests.get(url, headers=WIRE_HEADERS, timeout=10,
-                                 stream=True)
+                r = requests.get(url, headers=WIRE_HEADERS,
+                                 timeout=self.WIRE_TIMEOUT, stream=True)
                 if r.status_code == 200:
                     raw = _read_capped(r, _HTTP_MAX_BYTES_SCRAPE_HTML)
                     break
                 last_why = "HTTP %d" % r.status_code
+                if r.status_code == 429:
+                    # Explicit "back off" — stop retrying immediately
+                    # (more attempts only dig the hole deeper) and carry
+                    # the origin's own delay up to the circuit breaker.
+                    try:
+                        retry_after = float(r.headers.get("Retry-After", ""))
+                    except (TypeError, ValueError):
+                        retry_after = self.RETRY_AFTER_FALLBACK
+                    break
             except (requests.RequestException, OSError, ValueError) as exc:
                 last_why = type(exc).__name__
-            if attempt < self.WIRE_ATTEMPTS:
+            finally:
+                # Release the connection on the non-200 / oversize paths
+                # too, so a repeatedly-failing origin can't leak pooled
+                # sockets every 60s.
+                if r is not None:
+                    try:
+                        r.close()
+                    except Exception:
+                        pass
+            if attempt < attempts:
                 time.sleep(self.WIRE_RETRY_BACKOFF)
         if raw is None:
-            _log.warning("RSS %s: fetch failed after %d attempts (%s)",
-                         code, self.WIRE_ATTEMPTS, last_why)
-            return code, "ERR", []
+            _log.warning("RSS %s: fetch failed after %d attempt(s) (%s)",
+                         code, tried, last_why)
+            return code, "ERR", [], retry_after
 
         try:
             # ``sanitize_html`` defaults to True in feedparser, but make
@@ -722,7 +805,7 @@ class RSSWorker:
             parsed = feedparser.parse(raw, sanitize_html=True)
         except Exception as exc:
             _log.warning("RSS %s: parse failed (%s)", code, type(exc).__name__)
-            return code, "ERR", []
+            return code, "ERR", [], None
 
         out = []
         # Anchor both the parsed-pubdate path and the fallback to ET so
@@ -768,22 +851,53 @@ class RSSWorker:
                 })
             except Exception:
                 continue
-        return code, "OK", out
+        return code, "OK", out, None
 
-    def _apply_status(self, code, status):
+    def _apply_status(self, code, status, retry_after=None):
         """Map one cycle's outcome to the displayed status, with
-        hysteresis. A single transient failure keeps the previous status
-        (the retries in ``_fetch_one`` already absorb most blips); only
+        hysteresis, and drive the circuit breaker.
+
+        A single transient failure keeps the previous status (the retries
+        in ``_fetch_one`` already absorb most blips); only
         ``FAIL_STREAK_TO_ERR`` consecutive failed cycles turn the
-        indicator red. Any success resets the streak immediately."""
+        indicator red. Any success resets the streak AND closes the
+        circuit immediately, so a recovered origin is picked straight back
+        up without a restart.
+
+        ``retry_after`` is set when the origin answered 429. That is an
+        explicit instruction rather than a failure to absorb, so it trips
+        the circuit on the FIRST occurrence and for the duration the
+        origin asked for — retrying through a 429 only extends the
+        penalty (nginx's limiter restarts its window on every request)."""
         if status == "OK":
+            if self._circuit_until.get(code, 0.0):
+                _log.warning("RSS %s: origin recovered — circuit closed", code)
             self._fail_streaks[code] = 0
+            self._circuit_until[code] = 0.0
             self.statuses[code] = "OK"
             return
         streak = self._fail_streaks.get(code, 0) + 1
         self._fail_streaks[code] = streak
         if streak >= self.FAIL_STREAK_TO_ERR:
             self.statuses[code] = "ERR"
+        if retry_after is not None:
+            delay = max(0.0, min(float(retry_after), self.RETRY_AFTER_MAX))
+            self._circuit_until[code] = time.time() + delay
+            _log.warning("RSS %s: origin rate-limited us (429); honouring "
+                         "its Retry-After of %.0fs", code, delay)
+            return
+        if streak >= self.CIRCUIT_TRIP_FAILURES:
+            self._circuit_until[code] = time.time() + self.CIRCUIT_COOLDOWN
+            _log.warning("RSS %s: %d consecutive failures — skipping it for "
+                         "%.0f min (one probe after that)",
+                         code, streak, self.CIRCUIT_COOLDOWN / 60.0)
+
+    def circuit_state(self):
+        """``{code: seconds_until_next_probe}`` for open circuits only.
+        Read-only view for diagnostics/tests."""
+        now_t = time.time()
+        return {c: round(t - now_t, 1)
+                for c, t in self._circuit_until.items() if t > now_t}
 
     def fetch_feeds(self, report_dedupe=False):
         """Pull all wires. Returns the merged item list, or
@@ -808,25 +922,54 @@ class RSSWorker:
                 return (cached, True) if report_dedupe else cached
             self._last_fetch_at = now_t
 
+        # Circuit breaker: skip feeds whose origin is known-dark, and
+        # re-probe one at a time with a single attempt once the cooldown
+        # has elapsed. Without this, one dead origin costs
+        # WIRE_ATTEMPTS x WIRE_TIMEOUT on EVERY cycle — and because this
+        # method waits for the slowest feed, it delayed the healthy wires
+        # and blocked every manual refresh by the same amount.
+        due = []
+        for code, url in self.feeds:
+            until = self._circuit_until.get(code, 0.0)
+            if until and now_t < until:
+                continue                      # open, still cooling down
+            # Per-feed floor: some origins rate-limit far harder than the
+            # 60s loop, and hammering them past their limit just parks the
+            # feed in a 429 penalty box (permanently red indicator).
+            floor = self._min_interval.get(code, 0.0)
+            if floor and now_t - self._last_pull_at.get(code, 0.0) < floor:
+                continue
+            # 1 attempt for a half-open probe, full ladder when healthy.
+            due.append((code, url, 1 if until else self.WIRE_ATTEMPTS))
+        if not due:
+            # Every feed is cooling down — nothing to contact this cycle.
+            # Statuses are left exactly as they are (already ERR).
+            return ([], False) if report_dedupe else []
+
         items = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(self.feeds)) as ex:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(due)) as ex:
             # Map future -> feed code so a worker that raises can still be
             # attributed. Previously this was a bare list: an exception out
             # of _fetch_one was skipped without touching statuses, leaving
             # that wire frozen at its old value (a broken feed could keep
             # reading green).
-            future_to_code = {ex.submit(self._fetch_one, code, url): code
-                              for code, url in self.feeds}
+            future_to_code = {
+                ex.submit(self._fetch_one, code, url, attempts): code
+                for code, url, attempts in due
+            }
             for fut in concurrent.futures.as_completed(future_to_code):
                 code = future_to_code[fut]
+                # Stamp the attempt (not just successes) so a feed with a
+                # per-feed floor can't be re-hit every cycle while failing.
+                self._last_pull_at[code] = time.time()
                 try:
-                    _code, status, feed_items = fut.result()
+                    _code, status, feed_items, retry_after = fut.result()
                 except Exception as exc:
                     _log.warning("RSS %s: worker crashed (%s)",
                                  code, type(exc).__name__)
                     self._apply_status(code, "ERR")
                     continue
-                self._apply_status(code, status)
+                self._apply_status(code, status, retry_after)
                 items.extend(feed_items)
         with self._fetch_lock:
             self._last_fetch_items = list(items)
@@ -3481,7 +3624,11 @@ class ScannerApp(tk.Tk):
         # so status_loop can skip the .config() call when nothing
         # changed. ~430k redundant widget updates/day saved.
         self._last_indicator_colors: dict = {}
-        for i, code in enumerate(["PR", "GB", "YH", "FV", "SEC"]):
+        # Wire codes come from RSSWorker.FEEDS so swapping a feed can't
+        # leave a dead indicator (or a missing one) behind; FV/SEC are
+        # this app's own scrapers and are appended.
+        for i, code in enumerate([c for c, _u, _iv in RSSWorker.FEEDS]
+                                 + ["FV", "SEC"]):
             f = tk.Frame(self.stat_frame, bg=self.colors["BG"])
             f.pack(side="left", padx=2)
             lbl = tk.Label(f, text=code, bg=self.colors["BG"], fg="#888888")
@@ -4433,7 +4580,7 @@ class ScannerApp(tk.Tk):
         # forces a repaint.
         last = self._last_indicator_colors
         theme = self.theme_mode
-        for code in ["PR", "GB", "YH"]:
+        for code, _url, _iv in RSSWorker.FEEDS:
             s = rss_stats.get(code)
             color = c["STATUS_WAIT"]
             if s == "OK": color = c["STATUS_OK"]

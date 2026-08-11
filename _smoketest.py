@@ -1885,6 +1885,199 @@ def test_geometry_clamped_to_visible_desktop():
     print("geometry clamp OK")
 
 
+def test_wire_feeds_and_circuit_breaker():
+    """The wire roster, the shortened timeout, and the circuit breaker.
+
+    A dead origin used to cost WIRE_ATTEMPTS x timeout on EVERY 60s cycle,
+    and because fetch_feeds waits for the slowest feed it also delayed the
+    healthy wires and blocked every manual refresh by the same amount
+    (GlobeNewswire went dark 2026-08-10 and cost ~31s/cycle)."""
+    _hr("wire roster + circuit breaker")
+    import scan_sec as mod
+    import time as _t
+
+    # --- roster + UI wiring stay in lockstep -------------------------
+    codes = [c for c, _u, _iv in mod.RSSWorker.FEEDS]
+    assert codes == ["PR", "ST", "YH"], f"unexpected feed roster: {codes}"
+    assert mod.RSSWorker._SOURCE_LABELS["ST"] == "STitn"
+    # Retired GlobeNewswire must keep its label so cached items still
+    # render until they age past the 7-day cutoff.
+    assert mod.RSSWorker._SOURCE_LABELS.get("GB") == "Globe"
+    assert mod.RSSWorker.WIRE_TIMEOUT == 6.0, "wire timeout regressed"
+    for _c, u, _iv in mod.RSSWorker.FEEDS:
+        assert u.startswith("https://"), f"non-https feed url: {u}"
+        assert "globenewswire" not in u, "the dead GlobeNewswire feed is back"
+
+    # --- deterministic circuit-breaker exercise (no network) ---------
+    feed_xml = (b"<?xml version='1.0'?><rss version='2.0'><channel>"
+                b"<title>t</title><item>"
+                b"<title>ACME Corp Reports Q3 | ACME Stock News</title>"
+                b"<link>https://example.test/a</link>"
+                b"<pubDate>Mon, 11 Aug 2026 12:00:00 GMT</pubDate>"
+                b"</item></channel></rss>")
+    calls = []
+    dead = {"stocktitan.net"}
+
+    class _Resp:
+        status_code = 200
+
+        def iter_content(self, chunk_size=65536):
+            yield feed_xml
+
+        def close(self):
+            pass
+
+    def fake_get(url, headers=None, timeout=None, stream=None):
+        calls.append((url, timeout))
+        if any(d in url for d in dead):
+            raise mod.requests.exceptions.ReadTimeout("simulated")
+        return _Resp()
+
+    real_get = mod.requests.get
+    mod.requests.get = fake_get
+    try:
+        rw = mod.RSSWorker()
+        # Exercise the breaker in isolation: the per-feed poll floor is
+        # covered separately below, and leaving ST's 300s floor on here
+        # would stop the failure streak from ever accumulating.
+        rw._min_interval = {c: 0.0 for c in rw._min_interval}
+
+        def cycle():
+            rw._last_fetch_at = 0.0
+            calls.clear()
+            return rw.fetch_feeds()
+
+        def st_calls():
+            return [u for u, _t2 in calls if "stocktitan" in u]
+
+        # timeout actually applied
+        cycle()
+        assert {t for _u, t in calls} == {6.0}, "WIRE_TIMEOUT not applied"
+
+        # trips only after CIRCUIT_TRIP_FAILURES consecutive failures
+        for _ in range(mod.RSSWorker.CIRCUIT_TRIP_FAILURES):
+            cycle()
+        assert rw.statuses["ST"] == "ERR", "dead feed never went red"
+        assert "ST" in rw.circuit_state(), "circuit did not trip"
+        assert rw.statuses["PR"] == "OK" and rw.statuses["YH"] == "OK", \
+            "a dead feed dragged the healthy ones down"
+
+        # while open the origin is not contacted at all
+        cycle()
+        assert st_calls() == [], "open circuit still hit the dead origin"
+        assert len(calls) == 2, "healthy feeds stopped running"
+
+        # after cooldown: exactly ONE probe attempt, not the full ladder
+        rw._circuit_until["ST"] = _t.time() - 1
+        cycle()
+        assert len(st_calls()) == 1, "half-open probe used the retry ladder"
+        assert "ST" in rw.circuit_state(), "circuit did not re-arm"
+
+        # recovery closes it automatically — no restart needed
+        dead.clear()
+        rw._circuit_until["ST"] = _t.time() - 1
+        cycle()
+        assert rw.statuses["ST"] == "OK" and not rw.circuit_state(), \
+            "circuit did not close after the origin recovered"
+
+        # every feed dark must not raise (ThreadPoolExecutor(max_workers=0))
+        dead.update({"stocktitan.net", "prnewswire.com", "yahoo.com"})
+        for _ in range(mod.RSSWorker.CIRCUIT_TRIP_FAILURES + 1):
+            cycle()
+        assert cycle() == [], "all-circuits-open should yield no items"
+        assert calls == [], "all-circuits-open still contacted an origin"
+
+        # --- 429 handling: honour Retry-After, trip on the FIRST one ---
+        # Stocktitan answers 429 with Retry-After when polled too often;
+        # retrying through it only restarts nginx's limiter window.
+        class _R429:
+            status_code = 429
+            headers = {"Retry-After": "208"}
+
+            def iter_content(self, chunk_size=65536):
+                yield b""
+
+            def close(self):
+                pass
+
+        limited = {"n": 0}
+
+        def get_429(url, headers=None, timeout=None, stream=None):
+            calls.append((url, timeout))
+            if "stocktitan" in url:
+                limited["n"] += 1
+                return _R429()
+            return _Resp()
+
+        mod.requests.get = get_429
+        rw3 = mod.RSSWorker()
+        rw3._min_interval["ST"] = 0.0        # isolate the 429 logic
+        rw3._last_fetch_at = 0.0
+        calls.clear()
+        limited["n"] = 0
+        rw3.fetch_feeds()
+        assert limited["n"] == 1, (
+            f"a 429 was retried {limited['n']}x — that extends the penalty")
+        st_state = rw3.circuit_state().get("ST")
+        assert st_state is not None, "a 429 did not trip the circuit"
+        assert 150 <= st_state <= 208, (
+            f"Retry-After not honoured (circuit open for {st_state}s, "
+            "expected ~208)")
+        mod.requests.get = fake_get
+
+        # --- per-feed minimum interval ---------------------------------
+        dead.clear()          # all origins healthy again for this section
+        floors = {c: iv for c, _u, iv in mod.RSSWorker.FEEDS}
+        assert floors["ST"] >= 300.0, (
+            "Stocktitan needs a poll floor; it 429s at the 60s cadence")
+        assert floors["PR"] == 0.0 and floors["YH"] == 0.0, \
+            "the other feeds should keep the default cadence"
+        rw4 = mod.RSSWorker()
+        rw4._last_fetch_at = 0.0
+        calls.clear()
+        rw4.fetch_feeds()                       # first cycle pulls all 3
+        assert len([u for u, _t2 in calls if "stocktitan" in u]) == 1, \
+            "first cycle should pull ST exactly once"
+        rw4._last_fetch_at = 0.0
+        calls.clear()
+        rw4.fetch_feeds()                       # immediately after -> ST skipped
+        assert [u for u, _t2 in calls if "stocktitan" in u] == [], \
+            "the per-feed floor did not hold ST back"
+        assert len(calls) == 2, "the floor wrongly held back PR/YH too"
+
+        # parsed items carry the new source label and match the filter
+        dead.clear()
+        rw2 = mod.RSSWorker()
+        _c, status, out, _ra = rw2._fetch_one(
+            "ST", "https://www.stocktitan.net/rss/")
+        assert status == "OK" and out, "feed parse produced nothing"
+        assert out[0]["source"] == "STitn", f"bad label {out[0]['source']!r}"
+        assert mod._compile_ticker_pattern("ACME").search(out[0]["headline"]), \
+            "a Stocktitan headline would not match the per-symbol filter"
+    finally:
+        mod.requests.get = real_get
+    print("wire roster + circuit breaker OK")
+
+
+def test_status_indicators_track_feed_roster():
+    """The indicator row is built from RSSWorker.FEEDS, so a feed swap
+    can't leave a dead box (or a missing one) on screen."""
+    _hr("status indicators track the feed roster")
+    import scan_sec as mod
+    app = _make_app()
+    try:
+        expected = [c for c, _u, _iv in mod.RSSWorker.FEEDS] + ["FV", "SEC"]
+        assert list(app.indicators.keys()) == expected, (
+            f"indicators {list(app.indicators.keys())} != roster {expected}")
+        assert "GB" not in app.indicators, "a stale GB indicator is still drawn"
+        assert "ST" in app.indicators, "no indicator for the new ST feed"
+        # status_loop must paint the new code without raising
+        app.status_loop()
+        print("status indicators OK: %s" % list(app.indicators.keys()))
+    finally:
+        _teardown(app)
+
+
 # ----- main ------------------------------------------------------------
 
 
@@ -1926,6 +2119,9 @@ def main():
     test_impossible_periods_and_tie_break()
     test_sec_unknown_is_not_asserted_as_negative()
     test_geometry_clamped_to_visible_desktop()
+    # 2026-08-11 wire swap: GlobeNewswire -> Stocktitan + circuit breaker
+    test_wire_feeds_and_circuit_breaker()
+    test_status_indicators_track_feed_roster()
     # Reap the final Tk root on the main thread before the process exits,
     # so interpreter-shutdown GC has no leftover root to finalize on the
     # wrong thread (which would abort with Tcl_AsyncDelete after we've
