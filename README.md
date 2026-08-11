@@ -1,5 +1,7 @@
 # Morning Scanner
 
+![version](https://img.shields.io/badge/version-2.3.0-blue) ![platform](https://img.shields.io/badge/platform-Windows-lightgrey) ![license](https://img.shields.io/badge/license-MIT-green)
+
 A real-time news, SEC filing, and earnings scanner for active traders on Windows. Morning Scanner floats above your charting platform, automatically detects which ticker you're viewing, and pulls up relevant news headlines, SEC filing activity, float and short data, earnings proximity, and more — switching automatically as you change symbols.
 
 <img width="1914" height="1023" alt="watt11" src="https://github.com/user-attachments/assets/6042c801-8d6e-4e73-8ba6-6ed83ea2ae65" />
@@ -29,11 +31,12 @@ The window watcher runs on a dedicated daemon thread with a stall watchdog, so a
 - **Float & short data** — shares float (toggleable via the **Float** checkbox, optionally colored by a low-float cutoff) and short-float percentage from Finviz. The cutoff, the low/high colors, and the coloration on/off toggle are tunable in **Settings → Float**.
 - **Earnings row** — earnings date, EPS surprise, sales surprise, and EPS / revenue YoY on a dedicated togglable row, color-coded by proximity, with a future-date suppression safeguard.
 - **Earnings chart** — double-click any earnings label to open a per-quarter chart (YoY % and Surprise % bars on outlier-robust axes, click-to-highlight a quarter, live color editor). Reads an optional earnings-history parquet you supply (see [Optional earnings data](#optional-earnings-data)).
-- **Historical Lookup** — surfaces news and SEC EDGAR filings around any date for the active symbol, with async one-line summaries for filing rows. News enrichment can optionally use Polygon (see [API keys](#api-keys--privacy)).
+- **Historical Lookup** — surfaces news and SEC EDGAR filings around any date for the active symbol, with async one-line summaries for filing rows. It draws on three sources: your cached wires (all live feeds, ~7 days back), SEC EDGAR full-text search (years), and optionally Polygon (see [API keys](#api-keys--privacy)). Note that RSS wires are *current-news* formats with no archive — a Stocktitan pull spans roughly 4 hours — so for dates older than the wire cache's 7-day window, EDGAR and Polygon are what reach back.
 - **ETF coverage** — two indicators driven by JSON maps you can refresh from Settings:
   - **Single-stock ETF** — flags any active symbol covered by a leveraged / inverse single-stock ETF (and, when the symbol *is* one, what it tracks).
   - **Multi-holding ETFs** — a second **Held: N** indicator counts the sector / index / thematic / leveraged-index ETFs that hold the active stock as a top holding (click for the list). When the active symbol *is* one of those ETFs, the indicator turns blue with a high-confidence sector/strategy + leverage label (e.g. `ETF: Tech`, `ETF: 3X`), and hovering lists its current constituents. Holdings are sourced from [stockanalysis.com](https://stockanalysis.com); swap-based leveraged/inverse funds have their constituents recovered from the swap descriptions (via SEC name→ticker matching), falling back to a leverage-only badge when they can't be resolved.
-- **Quality-of-life** — keyword highlighting, time filters (Today / 48 h / All), live per-source status dots, clickable headlines, dark / light theme, adjustable font size, always-on-top, and persistent settings. Window position is restored on launch and re-centred automatically if the monitor it was saved on is no longer attached.
+- **Link indicator** — a small **↗** in a narrow gutter on the left marks every row that double-click will actually open, in both the news list and Historical Lookup. Rows without one (the historical banner, error notices, a scraped item whose link was missing) are text-only, so you never double-click into nothing. The marker mirrors the URL allowlist exactly, so it can't promise a click the app would then refuse.
+- **Quality-of-life** — keyword highlighting, time filters (Today / 48 h / All), live per-source status dots, clickable headlines, dark / light theme, adjustable font size, always-on-top, and persistent settings. Window position is restored on launch and re-centred automatically if the monitor it was saved on is no longer attached. The running version is shown in the window title.
 
 ## Wire resilience
 
@@ -98,7 +101,7 @@ venv\Scripts\python.exe _smoketest.py    # exit 0 = all green
 | **Highlight** field | Comma-separated keywords to highlight in the news table |
 | **+** / **−** buttons | Increase / decrease font size |
 | Theme button | Toggle dark / light |
-| Double-click headline | Open the article in your browser |
+| Double-click headline | Open the article in your browser (rows marked **↗** are clickable) |
 | Double-click an earnings label | Open the per-quarter earnings chart |
 | Click company name | Open the Finviz quote page |
 | Click **SEC:** / **Shelf:** labels | Open EDGAR recent filings / S-3 filings |

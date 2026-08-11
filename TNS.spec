@@ -131,4 +131,8 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=['7.ico'],
+    # Windows file-version resource. Without it the exe carries no
+    # version metadata and builds can only be told apart by size/date.
+    # Keep version_info.txt in step with scan_sec.__version__.
+    version='version_info.txt',
 )

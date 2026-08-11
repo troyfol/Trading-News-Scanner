@@ -2,6 +2,12 @@
 # Morning Scanner (Ultimate Edition II) - TradeStation + Full Settings Persistence
 # ==============================================================================
 
+# Single source of truth for the app version. Shown in the window title so a
+# running build can be identified without checking file dates, and baked into
+# the exe's file-version resource via TNS.spec / version_info.txt. Keep it in
+# step with the git tag (vX.Y.Z).
+__version__ = "2.3.0"
+
 import sys
 import os
 import time
@@ -3276,7 +3282,7 @@ class ScannerApp(tk.Tk):
         self.etf_map: EtfMap | None = None
         self.colors = THEMES[self.theme_mode]
         
-        self.title("Morning Scanner")
+        self.title(f"Morning Scanner v{__version__}")
         self.configure(bg=self.colors["BG"])
         self.attributes("-topmost", True)
         self.minsize(600, 420)
@@ -3638,13 +3644,24 @@ class ScannerApp(tk.Tk):
             self.indicators[code] = box
             self.status_widgets[code] = (lbl, f, box)
 
-        self.tree = ttk.Treeview(self, columns=("date", "age", "headline"), show="headings", selectmode="browse")
+        self.tree = ttk.Treeview(
+            self, columns=("link", "date", "age", "headline"),
+            show="headings", selectmode="browse",
+        )
+        # Narrow leading gutter carrying LINK_MARKER on rows that have a
+        # URL to open. Deliberately a separate column rather than a
+        # prefix on the headline: the text stays exactly what the source
+        # published (so search/highlight/tooltips are unaffected), and
+        # the marker can't be confused for part of the story.
+        self.tree.heading("link", text="")
         self.tree.heading("date", text="Date")
         self.tree.heading("age", text="Age")
         self.tree.heading("headline", text="Headline")
         # Date + Age are fixed: stretch=False keeps whatever width the
         # user has dragged them to. Only Headline expands/contracts
         # with the window.
+        self.tree.column("link", width=self._LINK_COL_WIDTH, anchor="center",
+                         stretch=False)
         self.tree.column("date", width=80, anchor="center", stretch=False)
         self.tree.column("age", width=70, anchor="center", stretch=False)
         self.tree.column("headline", width=500, anchor="w", stretch=True)
@@ -8809,7 +8826,7 @@ class ScannerApp(tk.Tk):
         self.tree.delete(*self.tree.get_children())
         self.tree.insert(
             "", "end", iid="hist_banner",
-            values=("", "", "▼",
+            values=("", "", "", "▼",
                      f"HISTORICAL: {sym} @ {target_iso}  "
                      f"({len(results)} result{'s' if len(results) != 1 else ''})"),
             tags=("hist_banner",),
@@ -8817,13 +8834,13 @@ class ScannerApp(tk.Tk):
         for n in notes:
             self.tree.insert(
                 "", "end",
-                values=("", "", "!", n),
+                values=("", "", "", "!", n),
                 tags=("hist_note",),
             )
         if not results:
             self.tree.insert(
                 "", "end",
-                values=("", "", "—", "[No filings or news found in window]"),
+                values=("", "", "", "—", "[No filings or news found in window]"),
                 tags=("hist_note",),
             )
             return
@@ -8865,7 +8882,8 @@ class ScannerApp(tk.Tk):
                 tag = "hist_wires"
             self.tree.insert(
                 "", "end", iid=f"hist_{i}",
-                values=(short_when, src_label, type_str, title),
+                values=(self._link_cell(item.get("url")), short_when,
+                        src_label, type_str, title),
                 tags=(tag,),
             )
 
@@ -8909,7 +8927,7 @@ class ScannerApp(tk.Tk):
         # Snapshot wires widths exactly once per session-in-historical.
         if self._wires_col_widths is None:
             saved = {}
-            for col in ("date", "age", "headline"):
+            for col in ("link", "date", "age", "headline"):
                 try:
                     saved[col] = int(self.tree.column(col, "width"))
                 except tk.TclError:
@@ -8919,11 +8937,14 @@ class ScannerApp(tk.Tk):
         # at runtime; existing children get cleared since their values
         # tuple no longer matches the schema.
         self.tree.delete(*self.tree.get_children())
-        self.tree.configure(columns=("when", "src", "type", "title"))
+        self.tree.configure(columns=("link", "when", "src", "type", "title"))
+        self.tree.heading("link", text="")
         self.tree.heading("when", text="Date")
         self.tree.heading("src", text="Source")
         self.tree.heading("type", text="Type")
         self.tree.heading("title", text="Title / Description")
+        self.tree.column("link", width=self._LINK_COL_WIDTH,
+                         anchor="center", stretch=False)
         self.tree.column("when", width=90, anchor="center", stretch=False)
         self.tree.column("src", width=70, anchor="center", stretch=False)
         self.tree.column("type", width=120, anchor="w", stretch=False)
@@ -9041,15 +9062,12 @@ class ScannerApp(tk.Tk):
         # Existing values tuple is (when, src, type, title) — preserve
         # the first three, swap title.
         iid = f"hist_{idx}"
+        # Set the one cell BY NAME and re-tag, instead of rebuilding the
+        # whole values tuple positionally — the latter silently dropped
+        # or shifted cells whenever the column layout changed.
         try:
-            cur_vals = self.tree.item(iid, "values")
-        except tk.TclError:
-            return
-        if not cur_vals or len(cur_vals) < 4:
-            return
-        new_vals = (cur_vals[0], cur_vals[1], cur_vals[2], new_title)
-        try:
-            self.tree.item(iid, values=new_vals, tags=(tag,))
+            self.tree.set(iid, "title", new_title)
+            self.tree.item(iid, tags=(tag,))
         except tk.TclError:
             pass
         # Promote rows that picked up actual data above the rest of
@@ -9353,12 +9371,15 @@ class ScannerApp(tk.Tk):
         self._tooltip_iid = None
 
     def _restore_wires_tree_columns(self):
-        """Re-apply the original 3-column wires layout."""
+        """Re-apply the wires layout (link gutter + 3 data columns)."""
         self.tree.delete(*self.tree.get_children())
-        self.tree.configure(columns=("date", "age", "headline"))
+        self.tree.configure(columns=("link", "date", "age", "headline"))
+        self.tree.heading("link", text="")
         self.tree.heading("date", text="Date")
         self.tree.heading("age", text="Age")
         self.tree.heading("headline", text="Headline")
+        self.tree.column("link", width=self._LINK_COL_WIDTH, anchor="center",
+                         stretch=False)
         self.tree.column("date", width=80, anchor="center", stretch=False)
         self.tree.column("age", width=70, anchor="center", stretch=False)
         self.tree.column("headline", width=500, anchor="w", stretch=True)
@@ -9504,7 +9525,12 @@ class ScannerApp(tk.Tk):
             elif self._match_hot_words(item['headline'], headline_lower, self.hot_words_old):
                 tag = "hot_old"
             self._displayed_indices.append(idx)
-            self.tree.insert("", "end", values=(item['date'], item['age'] or item['time'], item['headline']), tags=(tag,), iid=str(idx))
+            self.tree.insert(
+                "", "end",
+                values=(self._link_cell(item.get('url')), item['date'],
+                        item['age'] or item['time'], item['headline']),
+                tags=(tag,), iid=str(idx),
+            )
 
         # A search filter that matches nothing renders exactly like a dead
         # feed. Say which one it is. Non-numeric iid, so on_double_click
@@ -9513,9 +9539,9 @@ class ScannerApp(tk.Tk):
                 and (kw_terms or date_pred is not None)):
             self.tree.insert(
                 "", "end", iid="filter_note", tags=("filter_note",),
-                values=("", "", "%d headlines hidden by the active Search "
-                               "filter — press Clear to show them"
-                               % len(self.current_items)),
+                values=("", "", "", "%d headlines hidden by the active Search "
+                                    "filter — press Clear to show them"
+                                    % len(self.current_items)),
             )
 
     # Whitelist of URL schemes we trust to hand to the OS browser.
@@ -10224,22 +10250,25 @@ class ScannerApp(tk.Tk):
             if 0 <= i < len(self.current_items):
                 cand = self.current_items[i]
                 # Validate by headline so a stale iid (after a list
-                # reshuffle) can't open the wrong story.
+                # reshuffle) can't open the wrong story. Looked up BY
+                # COLUMN NAME rather than by tuple index so adding or
+                # reordering a column (e.g. the link gutter) can't
+                # silently start comparing the wrong cell.
                 try:
-                    row_vals = self.tree.item(iid, "values")
+                    row_head = self.tree.set(iid, "headline")
                 except tk.TclError:
-                    row_vals = ()
-                if row_vals and len(row_vals) >= 3 and row_vals[2] == cand.get("headline"):
+                    row_head = None
+                if row_head is not None and row_head == cand.get("headline"):
                     item = cand
         # Fallback: scan current_items by displayed headline+date.
         if item is None:
             try:
-                row_vals = self.tree.item(iid, "values")
+                row_date = self.tree.set(iid, "date")
+                row_head = self.tree.set(iid, "headline")
             except tk.TclError:
                 return
-            if not row_vals or len(row_vals) < 3:
+            if not row_head:
                 return
-            row_date, _row_age, row_head = row_vals[0], row_vals[1], row_vals[2]
             for cand in self.current_items:
                 if cand.get("headline") == row_head and cand.get("date") == row_date:
                     item = cand
@@ -10249,6 +10278,32 @@ class ScannerApp(tk.Tk):
         url = item.get("url")
         if url:
             self._safe_open_url(url)
+
+    # Marker shown in the leading gutter column of both the wires tree
+    # and the historical tree when a row has a URL that double-click will
+    # open. Non-clickable rows (the search-filter notice, the historical
+    # banner/notes, and any scraped item whose anchor had no href) leave
+    # the gutter blank, so "no marker" is the signal.
+    #
+    # U+2197 is the conventional external-link glyph and is in the same
+    # Arrows block as the refresh button's U+21BB, which this UI already
+    # renders. It inherits the row's own foreground colour, so it stays
+    # visually part of the row rather than competing with it.
+    LINK_MARKER = "↗"
+    _LINK_COL_WIDTH = 22
+
+    def _link_cell(self, url):
+        """Gutter value for a row: the marker when ``url`` is something
+        double-click will actually open, else blank. Mirrors
+        ``_safe_open_url``'s allowlist so the marker can never promise a
+        click that the opener will then refuse."""
+        if not url or not isinstance(url, str):
+            return ""
+        try:
+            scheme = urlparse(url).scheme.lower()
+        except (ValueError, TypeError):
+            return ""
+        return self.LINK_MARKER if scheme in self._ALLOWED_URL_SCHEMES else ""
 
     # Tk geometry: WxH, optionally +X+Y. Each position component is
     # "<sign><number>" where the number itself may be negative on a
@@ -10557,7 +10612,10 @@ class ScannerApp(tk.Tk):
                 self.state("normal")
                 self.update_idletasks()
             col_widths = {}
-            for c in ("date", "age", "headline"):
+            # "link" included so the gutter survives a restart; in
+            # historical mode these lookups raise TclError and are
+            # skipped, leaving the previously-saved widths in place.
+            for c in ("link", "date", "age", "headline"):
                 try:
                     col_widths[c] = int(self.tree.column(c, "width"))
                 except tk.TclError:

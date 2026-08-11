@@ -2078,6 +2078,156 @@ def test_status_indicators_track_feed_roster():
         _teardown(app)
 
 
+def test_link_marker_in_both_trees():
+    """Rows that double-click will open carry the link marker; rows that
+    won't open leave the gutter blank. The marker mirrors
+    _safe_open_url's scheme allowlist, so it can never promise a click
+    that the opener then refuses."""
+    _hr("link marker in the wires + historical trees")
+    import scan_sec as mod
+    import datetime as _dt
+
+    app = _make_app()
+    try:
+        today = mod._now_et().date().isoformat()
+        app.current_items = [
+            {"date": today, "time": "09:00AM", "age": "1h", "is_today": True,
+             "headline": "ACME beats on earnings | ACME Stock News",
+             "url": "https://example.test/a", "source": "STitn"},
+            {"date": today, "time": "09:05AM", "age": "1h", "is_today": True,
+             "headline": "Scraped row whose anchor had no href",
+             "url": "", "source": "Finviz"},
+            {"date": today, "time": "09:06AM", "age": "1h", "is_today": True,
+             "headline": "Row carrying a javascript: url",
+             "url": "javascript:alert(1)", "source": "Wire"},
+        ]
+        app.var_all.set(True)
+        app.refresh_ui()
+
+        assert app.tree["columns"][0] == "link", "wires tree lost its gutter"
+        marks = [app.tree.set(i, "link") for i in app.tree.get_children()]
+        assert marks[0] == mod.ScannerApp.LINK_MARKER, "http row unmarked"
+        assert marks[1] == "", "row with no url was marked as clickable"
+        assert marks[2] == "", "javascript: url was marked as clickable"
+
+        # The headline text itself must be untouched — search, highlight
+        # and the double-click headline match all key off it.
+        assert app.tree.set("0", "headline") == app.current_items[0]["headline"]
+
+        # Double-click must still resolve the right story now that the
+        # value tuple has an extra leading cell.
+        opened = []
+        app._safe_open_url = lambda u: opened.append(u)
+
+        class _Ev:
+            y = 0
+
+        app.tree.focus("0")
+        app.on_double_click(_Ev())
+        assert opened == ["https://example.test/a"], \
+            f"double-click resolved wrongly after the column change: {opened}"
+
+        # --- historical layout ---
+        app.historical_active = True
+        app.historical_date = _dt.date.today()
+        app._apply_historical_tree_columns()
+        assert app.tree["columns"][0] == "link", \
+            "historical tree lost its gutter"
+        results = [
+            {"when": today, "source": "wires", "type": "STitn",
+             "title": "ACME beats on earnings", "url": "https://example.test/a"},
+            {"when": today, "source": "edgar", "type": "8-K",
+             "title": "Item 2.02 Results", "url": "https://example.test/b"},
+            {"when": today, "source": "polygon", "type": "news",
+             "title": "No url on this row", "url": ""},
+        ]
+        app.historical_results = results
+        app._render_historical_results("ACME", today, results, ["a note"])
+        hm = {i: app.tree.set(i, "link") for i in app.tree.get_children()}
+        assert hm.get("hist_banner") == "", "banner marked as clickable"
+        assert hm.get("hist_0") == mod.ScannerApp.LINK_MARKER
+        assert hm.get("hist_1") == mod.ScannerApp.LINK_MARKER
+        assert hm.get("hist_2") == "", "url-less result marked as clickable"
+
+        # The async enrichment pass rewrites a row's title; it must not
+        # disturb the gutter (it used to rebuild the tuple positionally).
+        app._promote_enriched_row = lambda iid: None
+        app._refresh_historical_row(app._historical_gen, 1,
+                                    {"oneliner": "A one-line summary."})
+        assert app.tree.set("hist_1", "link") == mod.ScannerApp.LINK_MARKER, \
+            "enrichment wiped the link gutter"
+        assert "one-line summary" in app.tree.set("hist_1", "title")
+
+        # Exiting historical mode restores the wires layout WITH the gutter.
+        app.historical_active = False
+        app._restore_wires_tree_columns()
+        assert app.tree["columns"] == ("link", "date", "age", "headline")
+    finally:
+        _teardown(app)
+    print("link marker in both trees OK")
+
+
+def test_stocktitan_reaches_historical_lookup():
+    """Stocktitan items must be visible to Historical Lookup. Its RSS has
+    no archive (a 100-item pull spans ~4 HOURS, and there is no per-ticker
+    feed), so the reachable history is the wires cache's 7-day window via
+    the existing in-memory wires pass — not a new fetcher."""
+    _hr("stocktitan reaches historical lookup")
+    import scan_sec as mod
+    import datetime as _dt
+
+    app = _make_app()
+    try:
+        today = _dt.date.today()
+        app.current_items = [
+            {"date": today.isoformat(), "time": "09:00AM", "age": "1h",
+             "is_today": True, "source": "STitn",
+             "headline": "ACME beats on earnings | ACME Stock News",
+             "url": "https://example.test/a"},
+            {"date": (today - _dt.timedelta(days=30)).isoformat(),
+             "time": "09:00AM", "age": "30d", "is_today": False,
+             "source": "STitn", "headline": "Way out of window",
+             "url": "https://example.test/old"},
+        ]
+        rows = app._filter_wires_to_window(app.current_items, today)
+        titles = [r.get("title") or "" for r in rows]
+        assert any("ACME beats" in t for t in titles), \
+            "an in-window Stocktitan item never reached the historical pass"
+        assert not any("out of window" in t for t in titles), \
+            "the window filter let a far-out item through"
+        assert all(r.get("source") == "wires" for r in rows)
+    finally:
+        _teardown(app)
+    print("stocktitan -> historical lookup OK")
+
+
+def test_version_metadata_is_consistent():
+    """__version__, the window title, and the exe's version resource must
+    agree, so a running build can be identified."""
+    _hr("version metadata is consistent")
+    import re as _re
+    import scan_sec as mod
+
+    v = mod.__version__
+    assert _re.fullmatch(r"\d+\.\d+\.\d+", v), f"bad __version__: {v!r}"
+    vi = (HERE / "version_info.txt").read_text(encoding="utf-8")
+    parts = v.split(".")
+    tup = "(%s, %s, %s, 0)" % tuple(parts)
+    assert tup in vi, f"version_info.txt does not carry {tup}"
+    for field in ("FileVersion", "ProductVersion"):
+        assert f"StringStruct('{field}', '{v}')" in vi, \
+            f"version_info.txt {field} is not {v}"
+    spec = (HERE / "TNS.spec").read_text(encoding="utf-8")
+    assert "version='version_info.txt'" in spec, \
+        "TNS.spec no longer embeds the version resource"
+    app = _make_app()
+    try:
+        assert v in app.title(), f"window title lacks the version: {app.title()!r}"
+    finally:
+        _teardown(app)
+    print(f"version metadata OK (v{v})")
+
+
 # ----- main ------------------------------------------------------------
 
 
@@ -2122,6 +2272,10 @@ def main():
     # 2026-08-11 wire swap: GlobeNewswire -> Stocktitan + circuit breaker
     test_wire_feeds_and_circuit_breaker()
     test_status_indicators_track_feed_roster()
+    # v2.3.0: link marker + version metadata
+    test_link_marker_in_both_trees()
+    test_stocktitan_reaches_historical_lookup()
+    test_version_metadata_is_consistent()
     # Reap the final Tk root on the main thread before the process exits,
     # so interpreter-shutdown GC has no leftover root to finalize on the
     # wrong thread (which would abort with Tcl_AsyncDelete after we've
