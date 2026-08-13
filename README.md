@@ -1,6 +1,6 @@
 # Morning Scanner
 
-![version](https://img.shields.io/badge/version-2.3.0-blue) ![platform](https://img.shields.io/badge/platform-Windows-lightgrey) ![license](https://img.shields.io/badge/license-MIT-green)
+![version](https://img.shields.io/badge/version-2.4.0-blue) ![platform](https://img.shields.io/badge/platform-Windows-lightgrey) ![license](https://img.shields.io/badge/license-MIT-green)
 
 A real-time news, SEC filing, and earnings scanner for active traders on Windows. Morning Scanner floats above your charting platform, automatically detects which ticker you're viewing, and pulls up relevant news headlines, SEC filing activity, float and short data, earnings proximity, and more — switching automatically as you change symbols.
 
@@ -30,7 +30,7 @@ The window watcher runs on a dedicated daemon thread with a stall watchdog, so a
 - **Market cap** — always shown in the header in a large font, optionally colored by a 5-tier stepped gradient (micro / small / mid / large / mega, bright-red → bright-green). The gradient toggle and all five tier colors are tunable in **Settings → Market Cap**.
 - **Float & short data** — shares float (toggleable via the **Float** checkbox, optionally colored by a low-float cutoff) and short-float percentage from Finviz. The cutoff, the low/high colors, and the coloration on/off toggle are tunable in **Settings → Float**.
 - **Earnings row** — earnings date, EPS surprise, sales surprise, and EPS / revenue YoY on a dedicated togglable row, color-coded by proximity, with a future-date suppression safeguard.
-- **Earnings chart** — double-click any earnings label to open a per-quarter chart (YoY % and Surprise % bars on outlier-robust axes, click-to-highlight a quarter, live color editor). Reads an optional earnings-history parquet you supply (see [Optional earnings data](#optional-earnings-data)).
+- **Earnings chart** — double-click any earnings label to open a per-quarter chart (YoY % and Surprise % bars on outlier-robust axes, click-to-highlight a quarter, live color editor). The chart shows a configurable history window — 5 years by default — and can draw that window at a **fixed** width so bars stay the same size on every ticker (see [Earnings chart history window](#earnings-chart-history-window)). Reads an optional earnings-history parquet you supply (see [Optional earnings data](#optional-earnings-data)).
 - **Historical Lookup** — surfaces news and SEC EDGAR filings around any date for the active symbol, with async one-line summaries for filing rows. It draws on three sources: your cached wires (all live feeds, ~7 days back), SEC EDGAR full-text search (years), and optionally Polygon (see [API keys](#api-keys--privacy)). Note that RSS wires are *current-news* formats with no archive — a Stocktitan pull spans roughly 4 hours — so for dates older than the wire cache's 7-day window, EDGAR and Polygon are what reach back.
 - **ETF coverage** — two indicators driven by JSON maps you can refresh from Settings:
   - **Single-stock ETF** — flags any active symbol covered by a leveraged / inverse single-stock ETF (and, when the symbol *is* one, what it tracks).
@@ -50,6 +50,15 @@ News origins fail in a way that's easy to miss: they accept the connection and t
 Net effect: one dead source costs you one grey/red dot, not slower news everywhere.
 
 > **Note on GlobeNewswire:** it was replaced by Stocktitan on 2026-08-11. Its edge began completing the TLS handshake and then never responding — every path on the host, including the homepage, read-timed-out, and a VPN made no difference. Stocktitan also carries a ticker in ~94% of its headlines (vs ~37% for the other wires), which is what the per-symbol news filter matches on.
+
+## Earnings chart history window
+
+A deep-history ticker charts 100+ quarters, which squeezes the bars you actually care about down to slivers. The pop-out therefore draws a bounded window, set in **Settings → Earnings chart**:
+
+- **History window (years)** — how far back to draw, **5 years (20 quarters) by default**. The window is anchored on the newest column and counts backwards, and an upcoming earnings date counts as one of those quarters, so the chart stays pinned to the present rather than drifting with the parquet's age. `0` means **All** — no limit, the original behavior.
+- **Bars: Adaptive / Fixed** — *adaptive* draws only the quarters that exist, so a thin-history ticker stretches its bars across the panel. *Fixed* always draws the full window, padding the missing older quarters as blank dated slots, so bar width and column count are identical on every ticker and two charts can be read side by side.
+
+A padded slot is deliberately **not** the same thing as a missing quarter: quarters the app knows about but has no data for render `??`, while padding older than the ticker's history is simply blank. The window applies to Historical Lookup charts too — and if the date you looked up is older than the window, the window is extended back to reach it rather than trimming away the quarter you were looking for.
 
 ## Data integrity
 

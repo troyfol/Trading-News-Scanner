@@ -6,7 +6,7 @@
 # running build can be identified without checking file dates, and baked into
 # the exe's file-version resource via TNS.spec / version_info.txt. Keep it in
 # step with the git tag (vX.Y.Z).
-__version__ = "2.3.0"
+__version__ = "2.4.0"
 
 import sys
 import os
@@ -337,6 +337,24 @@ DEFAULT_EARNINGS_DB_PATH = str(BASE_DIR / "earnings_history.parquet")
 # don't have to re-point their parquet after a move. Custom paths (not
 # in this set) are left alone. Empty by default.
 _LEGACY_EARNINGS_DB_PATHS = ()
+
+# ----- Earnings chart history window -----
+# The chart shows the most recent N years of quarters, anchored on the
+# newest column (the upcoming-earnings placeholder when there is one,
+# otherwise the latest reported quarter) and counting backwards.
+# 0 means "All" — no limit, which is how the chart behaved before this
+# setting existed.
+EARNINGS_CHART_YEARS_DEFAULT = 5
+EARNINGS_CHART_YEARS_MAX = 20
+EARNINGS_CHART_YEARS_ALL = 0
+EARNINGS_CHART_QUARTERS_PER_YEAR = 4
+# How the window is filled when a ticker has less history than the limit:
+#   adaptive — draw only the quarters that exist, so bars stretch to fill
+#              the panel (the original behavior)
+#   fixed    — always draw exactly years*4 columns, padding the front with
+#              blank dated slots so bar geometry is identical across tickers
+EARNINGS_CHART_WINDOW_MODES = ("adaptive", "fixed")
+EARNINGS_CHART_WINDOW_MODE_DEFAULT = "adaptive"
 
 
 # How many random temp names to try before giving up. A collision needs
@@ -3719,6 +3737,8 @@ class ScannerApp(tk.Tk):
         self.earn_neg_color = self._pending_earn_neg_color
         self.earnings_db_path = self._pending_earnings_db_path
         self.earnings_chart_font_mult = self._pending_earnings_chart_font_mult
+        self.earnings_chart_years = self._pending_earnings_chart_years
+        self.earnings_chart_window_mode = self._pending_earnings_chart_window_mode
         self.earnings_chart_geometry = self._pending_earnings_chart_geometry
         self.earnings_chart_maximized = self._pending_earnings_chart_maximized
         # Commit the earnings-chart popup color overrides.
@@ -3939,11 +3959,55 @@ class ScannerApp(tk.Tk):
         var_db_path = tk.StringVar(value=self.earnings_db_path)
         ent_db_path = tk.Entry(wrap, textvariable=var_db_path, width=60, font=small, **ent_conf)
         ent_db_path.grid(row=9, column=1, columnspan=3, sticky="we")
+        # Row 10 carries the parquet hint AND the history-window
+        # controls, nested in a frame. This dialog grids by hardcoded
+        # row number all the way to row 36, so nesting adds controls
+        # here without renumbering ~25 later call sites.
+        chart_box = tk.Frame(wrap, bg=c["BG"])
+        chart_box.grid(row=10, column=0, columnspan=4, sticky="w", padx=(12, 0))
         tk.Label(
-            wrap,
+            chart_box,
             text="  source for the double-click-Earn chart popup; use the earnings_pipeline earnings_history.parquet",
             font=small, bg=c["BG"], fg=c["CREDIT"],
-        ).grid(row=10, column=0, columnspan=4, sticky="w", padx=(12, 0))
+        ).grid(row=0, column=0, columnspan=3, sticky="w")
+
+        tk.Label(chart_box, text="History window (years)", font=std,
+                 **lbl_conf).grid(row=1, column=0, sticky="w", pady=(6, 0))
+        var_chart_years = tk.StringVar(value=str(self.earnings_chart_years))
+        tk.Entry(chart_box, textvariable=var_chart_years, width=6,
+                 font=std, **ent_conf).grid(
+            row=1, column=1, sticky="w", padx=(6, 6), pady=(6, 0),
+        )
+        tk.Label(
+            chart_box,
+            text=(f"  0 = All (no limit), max {EARNINGS_CHART_YEARS_MAX}. "
+                  f"Counts {EARNINGS_CHART_QUARTERS_PER_YEAR} quarters/yr back "
+                  f"from the newest column; an upcoming earnings date counts "
+                  f"as one."),
+            font=small, bg=c["BG"], fg=c["CREDIT"],
+        ).grid(row=1, column=2, sticky="w", pady=(6, 0))
+
+        tk.Label(chart_box, text="Bars", font=std, **lbl_conf).grid(
+            row=2, column=0, sticky="w", pady=(4, 0),
+        )
+        var_chart_mode = tk.StringVar(value=self.earnings_chart_window_mode)
+        mode_row = tk.Frame(chart_box, bg=c["BG"])
+        mode_row.grid(row=2, column=1, columnspan=2, sticky="w",
+                       padx=(6, 0), pady=(4, 0))
+        for _m_val, _m_text in (("adaptive", "Adaptive"), ("fixed", "Fixed")):
+            tk.Radiobutton(
+                mode_row, text=_m_text, value=_m_val, variable=var_chart_mode,
+                font=std, bg=c["BG"], fg=c["FG"], selectcolor=c["BG"],
+                activebackground=c["BG"], activeforeground=c["FG"],
+                highlightthickness=0, borderwidth=0,
+            ).pack(side="left", padx=(0, 12))
+        tk.Label(
+            chart_box,
+            text=("  adaptive = draw only the quarters that exist (bars "
+                  "stretch to fill); fixed = always draw the full window, "
+                  "padding missing older quarters as blank slots"),
+            font=small, bg=c["BG"], fg=c["CREDIT"],
+        ).grid(row=3, column=0, columnspan=3, sticky="w")
 
         # ----- Historical lookup section (Polygon + EDGAR) -----
         tk.Label(wrap, text="Historical lookup", font=std_bold, **lbl_conf).grid(
@@ -4276,6 +4340,23 @@ class ScannerApp(tk.Tk):
             # doesn't load. Don't gate Save on file existence so a
             # path entered before the file is generated still saves.
             self.earnings_db_path = var_db_path.get().strip() or DEFAULT_EARNINGS_DB_PATH
+            # Earnings chart history window. 0 = All (no limit).
+            try:
+                chart_years = int(var_chart_years.get().strip())
+            except ValueError:
+                err_lbl.config(text="History window must be a whole number of years")
+                return
+            if not (EARNINGS_CHART_YEARS_ALL <= chart_years
+                    <= EARNINGS_CHART_YEARS_MAX):
+                err_lbl.config(
+                    text=f"History window must be 0–{EARNINGS_CHART_YEARS_MAX} "
+                         f"(0 = All)")
+                return
+            chart_mode = var_chart_mode.get().strip()
+            if chart_mode not in EARNINGS_CHART_WINDOW_MODES:
+                chart_mode = EARNINGS_CHART_WINDOW_MODE_DEFAULT
+            self.earnings_chart_years = chart_years
+            self.earnings_chart_window_mode = chart_mode
             # Validate historical lookup tunables.
             forms_val = var_hist_forms.get().strip() or DEFAULT_HISTORICAL_FORMS
             try:
@@ -4356,6 +4437,8 @@ class ScannerApp(tk.Tk):
                 "earn_pos_color": str(self.earn_pos_color),
                 "earn_neg_color": str(self.earn_neg_color),
                 "earnings_db_path": str(self.earnings_db_path),
+                "earnings_chart_years": int(self.earnings_chart_years),
+                "earnings_chart_window_mode": str(self.earnings_chart_window_mode),
                 "historical_forms": str(getattr(
                     self, "historical_forms", DEFAULT_HISTORICAL_FORMS)),
                 "historical_polygon_max_tickers": int(getattr(
@@ -6809,6 +6892,153 @@ class ScannerApp(tk.Tk):
         expanded = pd.DataFrame(out_rows)
         return expanded, set(gap_indices), set(future_indices)
 
+    @staticmethod
+    def _build_pad_rows(df, pad_n, quarter_days=91, report_lag_days=30):
+        """Synthesize ``pad_n`` blank leading columns for ``fixed``
+        window mode, walking one cadence step back per row from the
+        oldest dated row in ``df``. Anchors snap to a calendar quarter
+        end so the labels read like real quarters ("Mar 31 '21").
+
+        The rows are value-empty by construction, and they are reported
+        to the caller as a distinct pad set rather than as gap
+        placeholders: a column that predates the ticker's history is not
+        the same claim as a hole in coverage, so it draws no '??'.
+
+        Returns a list of row dicts, oldest first, ready to prepend."""
+        import pandas as pd
+        if pad_n <= 0 or df is None or getattr(df, "empty", True):
+            return []
+        # Oldest dated anchor in the kept window. Scan FORWARD because
+        # the leading row can itself be date-less (_anchor NaT), in
+        # which case we want the first row that does carry a date.
+        oldest = None
+        for col in ("_anchor", "period_ending", "report_date"):
+            if col not in df.columns:
+                continue
+            for i in range(len(df)):
+                v = df[col].iloc[i]
+                if v is not None and pd.notna(v):
+                    oldest = pd.Timestamp(v)
+                    break
+            if oldest is not None:
+                break
+
+        # Fill value per column is chosen from the SOURCE dtype, not from
+        # a hardcoded column list, so a parquet that carries extra
+        # bool/date columns still pads without a dtype surprise.
+        template = {}
+        for col in df.columns:
+            dt = df[col].dtype
+            if pd.api.types.is_bool_dtype(dt):
+                # A NaN here would later astype() to True — which on the
+                # _*_yoy_fv markers would tag a blank pad cell as a live
+                # finviz fill.
+                template[col] = False
+            elif pd.api.types.is_datetime64_any_dtype(dt):
+                # NaT, not NaN, so a fully date-less window can't upcast
+                # the date columns to object dtype.
+                template[col] = pd.NaT
+            else:
+                template[col] = float("nan")
+
+        rows = []
+        for k in range(1, pad_n + 1):
+            ph = dict(template)
+            if oldest is not None:
+                anchor = ScannerApp._snap_to_quarter_end(
+                    oldest - pd.Timedelta(days=quarter_days * k),
+                    max_offset_days=21,
+                )
+                if "_anchor" in ph:
+                    ph["_anchor"] = anchor
+                if "report_date" in ph:
+                    ph["report_date"] = (pd.Timestamp(anchor)
+                                         + pd.Timedelta(days=report_lag_days))
+            rows.append(ph)
+        rows.reverse()  # walked newest → oldest; emit oldest first
+        return rows
+
+    @staticmethod
+    def _apply_chart_year_window(df, gap_idx_set, future_idx_set,
+                                 years, mode=EARNINGS_CHART_WINDOW_MODE_DEFAULT,
+                                 keep_from_idx=None, quarter_days=91):
+        """Clamp the expanded chart frame to the most recent
+        ``years * 4`` quarters, and in ``fixed`` mode pad the front so
+        the window is always exactly that wide.
+
+        Runs on the output of ``_expand_with_gaps``, which is what makes
+        the arithmetic this simple: that frame is already
+        quarter-complete (interior holes filled with placeholders) and
+        its LAST row is the upcoming-earnings placeholder when one
+        exists. So the anchor to count back from — "the most recent
+        quarter, counting an upcoming earnings date" — is just the final
+        row, and N years is the final N*4 rows.
+
+        ``keep_from_idx`` is the lowest row index that must survive
+        (the Historical Lookup's highlighted quarter). When it sits
+        outside the window, the window is EXTENDED backwards to reach
+        it: the alternative is opening a chart that cannot show the very
+        date the user looked up.
+
+        ``gap_idx_set`` / ``future_idx_set`` are POSITIONAL, so they are
+        remapped onto the new row numbering here — every downstream
+        consumer (labels, bars, '??' markers, summary table, click
+        selection) indexes off these, and a stale offset silently paints
+        the markers onto the wrong quarters.
+
+        Returns ``(df, gap_idx_set, future_idx_set, pad_idx_set)``.
+        ``years <= 0`` is "All" — a no-op apart from the empty pad set,
+        i.e. exactly how the chart behaved before this setting."""
+        import pandas as pd
+        gap_idx_set = set(gap_idx_set or ())
+        future_idx_set = set(future_idx_set or ())
+        pad_idx_set = set()
+        if df is None or getattr(df, "empty", True):
+            return df, gap_idx_set, future_idx_set, pad_idx_set
+        try:
+            years = int(years)
+        except (TypeError, ValueError):
+            years = EARNINGS_CHART_YEARS_ALL
+        if years <= 0:
+            return df, gap_idx_set, future_idx_set, pad_idx_set
+
+        want = years * EARNINGS_CHART_QUARTERS_PER_YEAR
+        drop = max(0, len(df) - want)
+        if keep_from_idx is not None:
+            try:
+                pin = int(keep_from_idx)
+            except (TypeError, ValueError):
+                pin = None
+            if pin is not None and 0 <= pin < drop:
+                drop = pin
+
+        if drop > 0:
+            df = df.iloc[drop:].reset_index(drop=True)
+            gap_idx_set = {i - drop for i in gap_idx_set if i >= drop}
+            future_idx_set = {i - drop for i in future_idx_set if i >= drop}
+
+        if mode == "fixed" and len(df) < want:
+            pad_rows = ScannerApp._build_pad_rows(
+                df, want - len(df), quarter_days=quarter_days,
+            )
+            if pad_rows:
+                shift = len(pad_rows)
+                pad_df = pd.DataFrame(pad_rows, columns=list(df.columns))
+                # Match the source dtypes BEFORE concat. An all-NA pad
+                # block otherwise leaves the result dtype up to pandas
+                # (object 'ticker' inferred as float64, and so on), which
+                # is exactly the case pandas raises a FutureWarning about.
+                try:
+                    pad_df = pad_df.astype(df.dtypes.to_dict())
+                except (TypeError, ValueError):
+                    pass
+                df = pd.concat([pad_df, df], ignore_index=True)
+                gap_idx_set = {i + shift for i in gap_idx_set}
+                future_idx_set = {i + shift for i in future_idx_set}
+                pad_idx_set = set(range(shift))
+
+        return df, gap_idx_set, future_idx_set, pad_idx_set
+
     def _build_chart_summary_table(self, win, df, labels, eps_rep, eps_sp, rev_rep, rev_sp,
                                     gap_idx_set=None, future_idx_set=None,
                                     historical_idx_set=None,
@@ -7255,6 +7485,35 @@ class ScannerApp(tk.Tk):
         df, gap_idx_set, future_idx_set = self._expand_with_gaps(
             df, next_earnings,
         )
+        # Clamp to the configured history window (default 5 years),
+        # anchored on the newest column — which _expand_with_gaps has
+        # just made the upcoming-earnings placeholder when there is one.
+        # Applied HERE, before labels/bars/table are built, so every
+        # downstream index is already in window coordinates.
+        #
+        # First locate the historical-lookup quarter (if any) in
+        # pre-trim coordinates and pin it: a lookup older than the
+        # window extends the window back rather than losing the purple
+        # column. The post-trim historical_idx_set is rebuilt from the
+        # trimmed frame further down, so it needs no remapping.
+        keep_from_idx = None
+        if historical_date is not None and "report_date" in df.columns:
+            for i in range(len(df)):
+                v = df["report_date"].iloc[i]
+                if v is None or pd.isna(v):
+                    continue
+                if abs((pd.Timestamp(v).date() - historical_date).days) <= 1:
+                    keep_from_idx = i
+                    break
+        df, gap_idx_set, future_idx_set, pad_idx_set = \
+            self._apply_chart_year_window(
+                df, gap_idx_set, future_idx_set,
+                years=getattr(self, "earnings_chart_years",
+                              EARNINGS_CHART_YEARS_DEFAULT),
+                mode=getattr(self, "earnings_chart_window_mode",
+                             EARNINGS_CHART_WINDOW_MODE_DEFAULT),
+                keep_from_idx=keep_from_idx,
+            )
         sc = dict(source_counts) if source_counts else {"local": 0, "edgar": 0, "finviz": 0}
         n = len(df)
         x = np.arange(n)
@@ -7304,6 +7563,12 @@ class ScannerApp(tk.Tk):
         if historical_date is not None:
             for i, rd in enumerate(report_dates_per_row):
                 if rd is None:
+                    continue
+                # Fixed-mode pad columns carry a synthesized report_date
+                # purely so the axis reads as a real timeline. They
+                # represent no filing, so they must never claim to be
+                # the looked-up quarter.
+                if i in pad_idx_set:
                     continue
                 if abs((rd - historical_date).days) <= 1:
                     historical_idx_set.add(i)
@@ -10401,6 +10666,10 @@ class ScannerApp(tk.Tk):
         self._pending_earn_neg_color: str = "#FF4444"
         self._pending_earnings_db_path: str = DEFAULT_EARNINGS_DB_PATH
         self._pending_earnings_chart_font_mult: float = 1.0
+        self._pending_earnings_chart_years: int = EARNINGS_CHART_YEARS_DEFAULT
+        self._pending_earnings_chart_window_mode: str = (
+            EARNINGS_CHART_WINDOW_MODE_DEFAULT
+        )
         # Earnings chart window state — geometry string (size+pos like
         # "1000x940+120+60") and maximized flag. Persisted across
         # sessions so the chart reopens where the user left it.
@@ -10559,6 +10828,16 @@ class ScannerApp(tk.Tk):
             ecfm = data.get("earnings_chart_font_mult")
             if isinstance(ecfm, (int, float)) and 0.5 <= ecfm <= 2.5:
                 self._pending_earnings_chart_font_mult = float(ecfm)
+            # History window: 0 = All, else 1..EARNINGS_CHART_YEARS_MAX.
+            # bool is a subclass of int, so exclude it explicitly rather
+            # than letting `True` load as 1 year.
+            ecy = data.get("earnings_chart_years")
+            if (isinstance(ecy, int) and not isinstance(ecy, bool)
+                    and EARNINGS_CHART_YEARS_ALL <= ecy <= EARNINGS_CHART_YEARS_MAX):
+                self._pending_earnings_chart_years = int(ecy)
+            ecwm = data.get("earnings_chart_window_mode")
+            if isinstance(ecwm, str) and ecwm in EARNINGS_CHART_WINDOW_MODES:
+                self._pending_earnings_chart_window_mode = ecwm
             ecg = data.get("earnings_chart_geometry")
             # Same "+-1926" secondary-monitor form as the main-window
             # geometry above — the inner "-?" keeps the chart popup's
@@ -10655,6 +10934,13 @@ class ScannerApp(tk.Tk):
                 "earn_neg_color": str(self.earn_neg_color),
                 "earnings_db_path": str(self.earnings_db_path),
                 "earnings_chart_font_mult": float(self.earnings_chart_font_mult),
+                "earnings_chart_years": int(getattr(
+                    self, "earnings_chart_years", EARNINGS_CHART_YEARS_DEFAULT,
+                )),
+                "earnings_chart_window_mode": str(getattr(
+                    self, "earnings_chart_window_mode",
+                    EARNINGS_CHART_WINDOW_MODE_DEFAULT,
+                )),
                 "earnings_chart_geometry": str(getattr(
                     self, "earnings_chart_geometry", "",
                 ) or ""),

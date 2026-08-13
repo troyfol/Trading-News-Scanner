@@ -2228,6 +2228,156 @@ def test_version_metadata_is_consistent():
     print(f"version metadata OK (v{v})")
 
 
+def test_earnings_chart_year_window():
+    """The chart history window: trim to years*4 quarters anchored on the
+    newest column, EXTEND rather than drop a historical-lookup match that
+    predates the window, and in 'fixed' mode pad the front with blank
+    dated slots that are neither gap nor future placeholders."""
+    _hr("earnings chart year window (trim / pin / fixed padding)")
+    import scan_sec as mod
+    import pandas as pd
+
+    App = mod.ScannerApp
+    Q = mod.EARNINGS_CHART_QUARTERS_PER_YEAR
+
+    def _frame(n, start="2016-03-31"):
+        anchors = pd.date_range(start=start, periods=n, freq="91D")
+        return pd.DataFrame({
+            "ticker": ["TEST"] * n,
+            "_anchor": anchors,
+            "period_ending": anchors,
+            "report_date": anchors + pd.Timedelta(days=30),
+            "reported_eps": [1.0] * n,
+            "surprise_eps_pct": [2.0] * n,
+            "surprise_rev_pct": [3.0] * n,
+            "yoy_eps_pct": [4.0] * n,
+            "yoy_rev_pct": [5.0] * n,
+            "_eps_yoy_fv": [False] * n,
+            "_rev_yoy_fv": [False] * n,
+        })
+
+    # (a) Trim to exactly years*4, anchored on the LAST row (which is the
+    #     upcoming-earnings placeholder when _expand_with_gaps made one).
+    df = _frame(40)
+    last_rd = df["report_date"].iloc[-1]
+    out, gaps, fut, pads = App._apply_chart_year_window(
+        df, {35}, {39}, years=5, mode="adaptive")
+    assert len(out) == 5 * Q, f"expected {5 * Q} quarters, got {len(out)}"
+    assert out["report_date"].iloc[-1] == last_rd, \
+        "window must stay anchored on the newest column"
+    assert pads == set(), "adaptive mode must not pad"
+
+    # (b) The positional marker sets follow the trim. Getting this wrong
+    #     paints '??' and the yellow future column onto other quarters.
+    assert gaps == {15}, f"gap index not remapped (got {gaps})"
+    assert fut == {19}, f"future index not remapped (got {fut})"
+    _, gaps2, _, _ = App._apply_chart_year_window(
+        df, {2, 35}, {39}, years=5, mode="adaptive")
+    assert gaps2 == {15}, f"out-of-window gap must be dropped (got {gaps2})"
+
+    # (c) years=0 is "All" -- the pre-existing no-limit behavior.
+    out0, g0, f0, p0 = App._apply_chart_year_window(
+        df, {35}, {39}, years=0, mode="fixed")
+    assert len(out0) == 40 and g0 == {35} and f0 == {39} and p0 == set(), \
+        "years=0 (All) must leave the frame untouched"
+
+    # (d) A historical-lookup match older than the window extends it,
+    #     rather than opening a chart that can't show the looked-up date.
+    out_pin, _, fut_pin, _ = App._apply_chart_year_window(
+        df, {35}, {39}, years=5, mode="adaptive", keep_from_idx=10)
+    assert len(out_pin) == 30, \
+        f"pinned quarter must survive the trim (got {len(out_pin)} rows)"
+    assert fut_pin == {29}, f"future index wrong after pinned trim ({fut_pin})"
+    out_in, _, _, _ = App._apply_chart_year_window(
+        df, {35}, {39}, years=5, mode="adaptive", keep_from_idx=25)
+    assert len(out_in) == 5 * Q, "an in-window pin must not widen the window"
+
+    # (e) A short history stays short in adaptive, fills out in fixed.
+    short = _frame(8)
+    out_a, _, _, pads_a = App._apply_chart_year_window(
+        short, set(), {7}, years=5, mode="adaptive")
+    assert len(out_a) == 8 and pads_a == set(), \
+        "adaptive must draw only the quarters that exist"
+    out_f, gaps_f, fut_f, pads_f = App._apply_chart_year_window(
+        short, set(), {7}, years=5, mode="fixed")
+    assert len(out_f) == 5 * Q, \
+        f"fixed mode must render the full window (got {len(out_f)})"
+    assert pads_f == set(range(12)), f"pad set wrong (got {sorted(pads_f)})"
+    assert fut_f == {19}, f"future index must shift by the pad count ({fut_f})"
+    assert not (pads_f & gaps_f) and not (pads_f & fut_f), \
+        "pad columns must be neither gap nor future -- that is what keeps " \
+        "them from drawing '??' like a real coverage hole"
+
+    # (f) Pad rows are dated (the axis reads as a real timeline) but carry
+    #     no values, so nothing is drawn in them.
+    for col in ("reported_eps", "surprise_eps_pct", "yoy_eps_pct",
+                "surprise_rev_pct", "yoy_rev_pct"):
+        assert out_f[col].iloc[:12].isna().all(), \
+            f"pad column leaked a value in {col}"
+    assert out_f["_anchor"].iloc[:12].notna().all(), \
+        "pad columns must carry a synthesized date label"
+    assert out_f["_anchor"].is_monotonic_increasing, \
+        "padded frame must stay oldest -> newest"
+    assert out_f["report_date"].iloc[12] == short["report_date"].iloc[0], \
+        "real history must survive padding unchanged"
+    assert out_f["_eps_yoy_fv"].dtype == bool, \
+        f"pad concat flipped _eps_yoy_fv to {out_f['_eps_yoy_fv'].dtype}"
+
+    # (g) Settings round-trip, including rejection of junk values.
+    live = mod.SETTINGS_FILE
+    backup = live.read_bytes() if live.exists() else None
+    try:
+        if live.exists():
+            live.unlink()
+        app = _make_app()
+        try:
+            assert app.earnings_chart_years == mod.EARNINGS_CHART_YEARS_DEFAULT, \
+                f"default window is not {mod.EARNINGS_CHART_YEARS_DEFAULT}y"
+            assert (app.earnings_chart_window_mode
+                    == mod.EARNINGS_CHART_WINDOW_MODE_DEFAULT), \
+                "default render mode changed"
+        finally:
+            _teardown(app)
+
+        live.write_text(json.dumps({
+            "earnings_chart_years": 3,
+            "earnings_chart_window_mode": "fixed",
+        }), encoding="utf-8")
+        app = _make_app()
+        try:
+            assert app.earnings_chart_years == 3, "saved year window not loaded"
+            assert app.earnings_chart_window_mode == "fixed", \
+                "saved render mode not loaded"
+        finally:
+            _teardown(app)
+
+        # Out-of-range / unknown-mode / bool-as-int must all fall back to
+        # the defaults rather than reaching the renderer.
+        for junk in ({"earnings_chart_years": 999,
+                      "earnings_chart_window_mode": "sideways"},
+                     {"earnings_chart_years": True,
+                      "earnings_chart_window_mode": 7},
+                     {"earnings_chart_years": -4}):
+            live.write_text(json.dumps(junk), encoding="utf-8")
+            app = _make_app()
+            try:
+                assert (app.earnings_chart_years
+                        == mod.EARNINGS_CHART_YEARS_DEFAULT), \
+                    f"junk settings leaked a year window: {junk}"
+                assert (app.earnings_chart_window_mode
+                        in mod.EARNINGS_CHART_WINDOW_MODES), \
+                    f"junk settings leaked a render mode: {junk}"
+            finally:
+                _teardown(app)
+    finally:
+        if backup is not None:
+            live.write_bytes(backup)
+        elif live.exists():
+            live.unlink()
+
+    print("chart year window OK")
+
+
 # ----- main ------------------------------------------------------------
 
 
@@ -2276,6 +2426,8 @@ def main():
     test_link_marker_in_both_trees()
     test_stocktitan_reaches_historical_lookup()
     test_version_metadata_is_consistent()
+    # Earnings chart history window (years limit + adaptive/fixed bars)
+    test_earnings_chart_year_window()
     # Reap the final Tk root on the main thread before the process exits,
     # so interpreter-shutdown GC has no leftover root to finalize on the
     # wrong thread (which would abort with Tcl_AsyncDelete after we've
