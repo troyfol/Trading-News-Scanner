@@ -1116,6 +1116,110 @@ def test_mcap_gradient_and_float_toggle():
         _teardown(app)
 
 
+def test_settings_swatches_show_stored_colors():
+    """Every color swatch in the Settings dialog must OPEN painted with
+    the stored color. The write-trace alone fires only on an edit, so a
+    customized tier used to open showing its default swatch while the
+    entry beside it read the real value -- which made a changed color
+    look untouched."""
+    _hr("settings dialog swatches match stored colors")
+    import tkinter as tk
+    import scan_sec as mod
+
+    def _walk(w, out):
+        for ch in w.winfo_children():
+            out.append(ch)
+            _walk(ch, out)
+        return out
+
+    def _at(widgets, row, column, cls):
+        for w in widgets:
+            if not isinstance(w, cls):
+                continue
+            gi = w.grid_info()
+            if gi and str(gi.get("row")) == str(row) \
+                    and str(gi.get("column")) == str(column):
+                return w
+        return None
+
+    app = _make_app()
+    try:
+        # Two tiers pushed well away from their defaults, three left alone,
+        # one float row customized and one left blank (= follow theme).
+        custom = dict(mod.MCAP_TIER_DEFAULT_COLORS)
+        custom["small"] = "#00FFFF"   # cyan; the default here is orange
+        custom["micro"] = "#FF0A01"
+        app.mcap_tier_colors = custom
+        app.float_low_color = "#DC143C"
+        app.float_high_color = ""     # blank -> theme red
+
+        app.open_settings_dialog()
+        app.update_idletasks()
+        dlg = [w for w in app.winfo_children()
+               if isinstance(w, tk.Toplevel) and w.title() == "Settings"][-1]
+        try:
+            dlg.withdraw()            # don't flash a window mid-suite
+            widgets = _walk(dlg, [])
+            # Rows are located by their column-0 label text, not by the
+            # hardcoded grid numbers, so a later row insert can't quietly
+            # point this test at the wrong swatch.
+            rows = {}
+            for w in widgets:
+                if isinstance(w, tk.Label):
+                    gi = w.grid_info()
+                    if gi and str(gi.get("column")) == "0":
+                        rows[w.cget("text")] = gi["row"]
+
+            def _swatch_rgb(label_text):
+                row = rows.get(label_text)
+                assert row is not None, f"no settings row labeled {label_text!r}"
+                sw = _at(widgets, row, 2, tk.Label)
+                assert sw is not None, f"no swatch on row {label_text!r}"
+                # Resolve through Tk itself: this is the color actually
+                # rendered, not merely the string handed to config().
+                return dlg.winfo_rgb(sw.cget("bg"))
+
+            expected_pairs = []
+            for tier in mod.MCAP_TIER_KEYS:
+                expected_pairs.append(
+                    (f"{mod.MCAP_TIER_LABELS[tier]} (#hex)", custom[tier]))
+            expected_pairs.append(("Low color (#hex)", "#DC143C"))
+            expected_pairs.append(("High color (#hex)", app.colors["TXT_BAD"]))
+
+            for label_text, want in expected_pairs:
+                got = _swatch_rgb(label_text)
+                assert got == dlg.winfo_rgb(want), (
+                    f"{label_text}: swatch renders {got}, expected {want}")
+
+            # The customized tier must NOT be showing its default, which is
+            # the exact symptom this guards against.
+            assert _swatch_rgb("Small ($250M-$2B) (#hex)") != \
+                dlg.winfo_rgb(mod.MCAP_TIER_DEFAULT_COLORS["small"]), \
+                "small-tier swatch fell back to the default color"
+
+            # And the live trace still works after the initial paint.
+            small_row = rows["Small ($250M-$2B) (#hex)"]
+            ent = _at(widgets, small_row, 1, tk.Entry)
+            assert ent is not None, "no entry on the small-tier row"
+            ent.delete(0, "end")
+            ent.insert(0, "#123456")
+            app.update_idletasks()
+            assert _swatch_rgb("Small ($250M-$2B) (#hex)") == \
+                dlg.winfo_rgb("#123456"), "swatch did not follow a live edit"
+            # A half-typed value falls back to the row's default, not to junk.
+            ent.delete(0, "end")
+            ent.insert(0, "#12")
+            app.update_idletasks()
+            assert _swatch_rgb("Small ($250M-$2B) (#hex)") == \
+                dlg.winfo_rgb(mod.MCAP_TIER_DEFAULT_COLORS["small"]), \
+                "incomplete hex did not fall back to the tier default"
+            print("settings swatches OK")
+        finally:
+            dlg.destroy()
+    finally:
+        _teardown(app)
+
+
 def test_cik_resolver_close_joins_refresh_thread():
     """CIKResolver.close() must wait briefly for the SEC ticker
     refresh thread before closing the session — otherwise the session
@@ -2403,6 +2507,7 @@ def main():
     test_search_filter_paste_sanitizing()
     test_report_day_freshness_marker()
     test_mcap_gradient_and_float_toggle()
+    test_settings_swatches_show_stored_colors()
     test_finviz_ea_synthesizer()
     test_eps_sales_surpr_cell_parser()
     test_finviz_ea_yoy_small_base_floor()

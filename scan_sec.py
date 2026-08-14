@@ -6,7 +6,7 @@
 # running build can be identified without checking file dates, and baked into
 # the exe's file-version resource via TNS.spec / version_info.txt. Keep it in
 # step with the git tag (vX.Y.Z).
-__version__ = "2.4.0"
+__version__ = "2.4.1"
 
 import sys
 import os
@@ -4220,6 +4220,11 @@ class ScannerApp(tk.Tk):
                 try: swatch.config(bg=eff)
                 except tk.TclError: pass
             var.trace_add("write", upd)
+            # The trace only fires on an edit, so paint the swatch from the
+            # STORED value right now. Without this every row opens showing
+            # its fallback color, and a customized tier reads as untouched
+            # even though the entry beside it says otherwise.
+            upd()
             return var
 
         var_float_low = make_float_color_row(
