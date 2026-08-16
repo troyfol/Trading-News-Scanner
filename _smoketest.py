@@ -2482,6 +2482,192 @@ def test_earnings_chart_year_window():
     print("chart year window OK")
 
 
+def test_fiscal_quarter_drift_matching():
+    """52/53-week fiscal calendars drift a quarter end across the month
+    boundary — VPG's Q1 FY2026 ended 2026-04-04 while finviz AND the
+    parquet both key that quarter as "Mar 2026". The old exact
+    (year, month) match therefore failed, which cost us twice: the local
+    row never got its EDGAR gap-fill, and the unmatched filing looked
+    like a missing quarter, so Pass 2 appended a duplicate row under the
+    same report date (two "May 12 '26" bars). Pairing must be by nearest
+    fiscal-quarter end, one filing to at most one row."""
+    _hr("fiscal-quarter drift matching")
+    import scan_sec as mod
+    import pandas as pd
+    from datetime import date
+
+    # Local period_endings are day-1 of the period-end month, so the
+    # month END is what EDGAR's real period end is compared against.
+    assert mod._period_end_anchor(pd.Timestamp("2026-03-01")) == date(2026, 3, 31)
+    assert mod._period_end_anchor(pd.Timestamp("2026-02-01")) == date(2026, 2, 28)
+    assert mod._period_end_anchor(pd.Timestamp("2024-02-01")) == date(2024, 2, 29)
+
+    # VPG's real shape, verified against data.sec.gov.
+    periods = [
+        (0, pd.Timestamp("2025-09-01")),   # EDGAR period end 2025-09-27
+        (1, pd.Timestamp("2025-12-01")),   # EDGAR period end 2025-12-31
+        (2, pd.Timestamp("2026-03-01")),   # EDGAR period end 2026-04-04 (drift)
+        (3, pd.Timestamp("2026-06-01")),   # EDGAR period end 2026-07-04 (drift)
+    ]
+    filings = [
+        {"accession": "q3", "file_date": date(2025, 11, 4),
+         "report_date": date(2025, 9, 27)},
+        {"accession": "fy", "file_date": date(2026, 2, 27),
+         "report_date": date(2025, 12, 31)},
+        {"accession": "q1", "file_date": date(2026, 5, 12),
+         "report_date": date(2026, 4, 4)},
+        {"accession": "q2", "file_date": date(2026, 8, 5),
+         "report_date": date(2026, 7, 4)},
+    ]
+    matched, unmatched = mod._match_filings_to_periods(periods, filings)
+    assert {k: v["accession"] for k, v in matched.items()} == {
+        0: "q3", 1: "fy", 2: "q1", 3: "q2"}, (
+        f"drifted quarters mispaired: "
+        f"{ {k: v['accession'] for k, v in matched.items()} }")
+    assert not unmatched, (
+        f"filings left unclaimed would become duplicate rows: "
+        f"{[f['accession'] for f in unmatched]}")
+
+    # Guard the fixture itself: with zero tolerance (== the old exact
+    # month key) the two drifted quarters MUST fail to pair, otherwise
+    # this test would pass without exercising the bug at all.
+    m0, _ = mod._match_filings_to_periods(periods, filings, tolerance_days=0)
+    assert 2 not in m0 and 3 not in m0, (
+        "fixture no longer exercises fiscal drift — the drifted quarters "
+        "now match even at zero tolerance")
+
+    # A local quarter EDGAR never filed must stay unmatched rather than
+    # steal a neighbour's filing, which would graft the wrong period's
+    # EPS/YoY onto the row. Adjacent quarters are ~91d apart, well
+    # outside the window.
+    m2, u2 = mod._match_filings_to_periods(
+        [(9, pd.Timestamp("2026-03-01"))],
+        [{"accession": "far", "file_date": date(2026, 8, 5),
+          "report_date": date(2026, 7, 4)}],
+    )
+    assert m2 == {} and len(u2) == 1, (
+        f"a 95-day-distant filing was paired anyway: {m2}")
+
+    # One filing, two candidate rows: the nearer row wins and the filing
+    # is claimed exactly once.
+    m3, u3 = mod._match_filings_to_periods(
+        [(0, pd.Timestamp("2026-03-01")), (1, pd.Timestamp("2026-04-01"))],
+        [{"accession": "q1", "file_date": date(2026, 5, 12),
+          "report_date": date(2026, 4, 4)}],
+    )
+    assert list(m3) == [0], f"nearest-row pairing broke: {list(m3)}"
+    assert not u3, "the claimed filing was also reported unmatched"
+    print("fiscal-quarter drift matching OK")
+
+
+def test_edgar_gapfill_emits_no_duplicate_bars():
+    """End-to-end guard on the chart loader: a 52/53-week filer whose
+    EDGAR period ends drift past the month boundary must produce exactly
+    one row per earnings event, with the EDGAR YoY landing ON the local
+    row instead of on a phantom second bar."""
+    _hr("EDGAR gap-fill emits no duplicate bars")
+    import scan_sec as mod
+    import pandas as pd
+    import tempfile
+    from datetime import date
+
+    filings = [
+        {"form": "10-Q", "accession": "q2", "file_date": date(2026, 8, 5),
+         "report_date": date(2026, 7, 4)},
+        {"form": "10-Q", "accession": "q1", "file_date": date(2026, 5, 12),
+         "report_date": date(2026, 4, 4)},
+        {"form": "10-K", "accession": "fy", "file_date": date(2026, 2, 27),
+         "report_date": date(2025, 12, 31)},
+        {"form": "10-Q", "accession": "q3", "file_date": date(2025, 11, 4),
+         "report_date": date(2025, 9, 27)},
+    ]
+    # Parquet rows: finviz convention (day-1 of the quarter-end month),
+    # with the drifted Q1's EPS YoY nulled by the small-base floor — the
+    # exact hole the EDGAR pass is supposed to fill.
+    hist = pd.DataFrame({
+        "ticker": ["DRIFT"] * 4,
+        "period_ending": pd.to_datetime(
+            ["2025-09-01", "2025-12-01", "2026-03-01", "2026-06-01"]),
+        "report_date": pd.to_datetime(
+            ["2025-11-04", "2026-02-11", "2026-05-12", "2026-08-05"]),
+        "reported_eps": [0.26, 0.07, 0.07, 0.04],
+        "reported_rev": [79.7, 80.5, 84.3, 83.9],
+        "surprise_eps_pct": [29.8, -66.2, 70100.0, -78.9],
+        "surprise_rev_pct": [4.0, 3.1, 9.4, -4.0],
+        "yoy_eps_pct": [36.8, float("nan"), float("nan"), -76.4],
+        "yoy_rev_pct": [5.2, 10.9, 17.5, 11.6],
+        "source": ["finviz"] * 4,
+        "report_date_proxy": [False] * 4,
+    })
+
+    orig_period = mod.HistoricalLookup.filing_period
+    orig_find = mod.HistoricalLookup._find_fact_by_period
+    orig_yoy = mod.HistoricalLookup.extract_yoy
+    app = _make_app()
+    tmpdir = tempfile.mkdtemp()
+    try:
+        db = os.path.join(tmpdir, "hist.parquet")
+        hist.to_parquet(db, index=False)
+
+        app.fetcher.list_earnings_filings = lambda cik: list(filings)
+        app.fetcher.fetch_finviz_earnings = lambda sym: []   # skip Pass 4
+        app._xbrl_get_or_fetch = lambda cik_padded, ua: {"stub": True}
+        mod.HistoricalLookup.filing_period = staticmethod(
+            lambda facts, accn: ("2026-01-01", "2026-04-04"))
+        mod.HistoricalLookup._find_fact_by_period = staticmethod(
+            lambda *a, **k: 1.0)
+        # A distinctive value so we can prove WHERE it landed.
+        mod.HistoricalLookup.extract_yoy = staticmethod(
+            lambda facts, accn: {"eps_yoy": 71.428571, "rev_yoy": 17.579905})
+
+        df, counts = app._load_chart_data_with_gap_fill(
+            "DRIFT", db, cik="1487952", finviz_meta=None)
+
+        assert df is not None and not df.empty, "loader returned nothing"
+        rds = df["report_date"].dropna()
+        dupes = sorted({str(x.date()) for x in rds[rds.duplicated(keep=False)]})
+        assert not dupes, f"duplicate report_date bars emitted: {dupes}"
+        assert len(df) == 4, (
+            f"EDGAR synthesized {len(df) - 4} phantom row(s) for quarters "
+            "the parquet already covered")
+        # The drifted quarter's hole is filled, on the REAL row.
+        q1 = df.loc[df["report_date"] == pd.Timestamp("2026-05-12")]
+        assert len(q1) == 1, f"expected one 2026-05-12 row, got {len(q1)}"
+        assert abs(float(q1.iloc[0]["yoy_eps_pct"]) - 71.428571) < 1e-6, (
+            "the drifted quarter's EDGAR YoY did not land on the local row "
+            f"(got {q1.iloc[0]['yoy_eps_pct']})")
+        # It must keep its own finviz surprise %s, not be overwritten.
+        assert abs(float(q1.iloc[0]["surprise_eps_pct"]) - 70100.0) < 1e-6, (
+            "the local row's surprise % was clobbered by the EDGAR pass")
+        assert counts["edgar"] > 0, "EDGAR pass reported no fills at all"
+
+        # Belt-and-braces: even with the period matcher fully crippled
+        # (every filing reported unmatched, == the old failure mode), the
+        # report_date collision guard alone must still keep Pass 2 from
+        # drawing a second bar on a date a row already occupies.
+        orig_match = mod._match_filings_to_periods
+        try:
+            mod._match_filings_to_periods = (
+                lambda periods, fils, tolerance_days=None: ({}, list(fils)))
+            df2, _ = app._load_chart_data_with_gap_fill(
+                "DRIFT", db, cik="1487952", finviz_meta=None)
+            rds2 = df2["report_date"].dropna()
+            dupes2 = sorted({str(x.date())
+                             for x in rds2[rds2.duplicated(keep=False)]})
+            assert not dupes2, (
+                "the report_date collision guard did not hold when the "
+                f"period matcher failed: {dupes2}")
+        finally:
+            mod._match_filings_to_periods = orig_match
+    finally:
+        mod.HistoricalLookup.filing_period = orig_period
+        mod.HistoricalLookup._find_fact_by_period = orig_find
+        mod.HistoricalLookup.extract_yoy = orig_yoy
+        _teardown(app)
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    print("EDGAR gap-fill duplicate guard OK")
+
+
 # ----- main ------------------------------------------------------------
 
 
@@ -2533,6 +2719,9 @@ def main():
     test_version_metadata_is_consistent()
     # Earnings chart history window (years limit + adaptive/fixed bars)
     test_earnings_chart_year_window()
+    # v2.4.2: 52/53-week fiscal drift -> duplicate chart bars
+    test_fiscal_quarter_drift_matching()
+    test_edgar_gapfill_emits_no_duplicate_bars()
     # Reap the final Tk root on the main thread before the process exits,
     # so interpreter-shutdown GC has no leftover root to finalize on the
     # wrong thread (which would abort with Tcl_AsyncDelete after we've

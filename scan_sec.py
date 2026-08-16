@@ -6,7 +6,7 @@
 # running build can be identified without checking file dates, and baked into
 # the exe's file-version resource via TNS.spec / version_info.txt. Keep it in
 # step with the git tag (vX.Y.Z).
-__version__ = "2.4.1"
+__version__ = "2.4.2"
 
 import sys
 import os
@@ -1108,6 +1108,76 @@ _YOY_MIN_BASE_REV_RAW = 1_000_000.0  # $   (EDGAR XBRL period facts)
 # 1e6 literal but is a YoY base-floor THRESHOLD, not a unit conversion —
 # conflating them would couple two unrelated knobs).
 _XBRL_DOLLARS_PER_MILLION = 1_000_000.0
+
+# Fiscal-quarter alignment tolerance, in days, between a LOCAL
+# ``period_ending`` (finviz/zacks convention: day-1 of the period-end
+# month) and an EDGAR filing's ACTUAL period end.
+#
+# 52/53-week fiscal calendars drift the real quarter end across the month
+# boundary: VPG's Q1 FY2026 ended 2026-04-04 while both finviz and the
+# parquet call that quarter "Mar 2026". An exact (year, month) key
+# therefore fails to match, which cost us twice — the local row never got
+# its EDGAR gap-fill, AND the unmatched filing looked like a quarter the
+# parquet was missing, so a duplicate synthetic row was appended under
+# the same report date (two "May 12 '26" bars on the chart).
+#
+# Distance is measured month-END-to-period-end, where the real drift is a
+# handful of days. The window is capped just under half a quarter
+# (~91/2) so two DISTINCT quarters — always ~84+ days apart — can never
+# both be candidates for the same local row.
+_FISCAL_QUARTER_MATCH_DAYS = 45
+
+
+def _period_end_anchor(ts):
+    """Last day of ``ts``'s month, as a ``datetime.date``.
+
+    Local ``period_ending`` values are normalized to day-1 of the
+    period-end month, so the month END is the closest thing we have to
+    the true fiscal-quarter end and is what EDGAR's period end should be
+    compared against."""
+    import pandas as pd
+    t = pd.Timestamp(ts)
+    return (t.replace(day=1) + pd.offsets.MonthEnd(1)).date()
+
+
+def _match_filings_to_periods(periods, filings,
+                              tolerance_days=_FISCAL_QUARTER_MATCH_DAYS):
+    """Pair local period_endings with EDGAR filings by nearest fiscal
+    quarter end.
+
+    ``periods`` is an iterable of ``(key, period_ending)``; ``filings``
+    is the ``list_earnings_filings`` output. Returns
+    ``(matched, unmatched_filings)`` where ``matched`` maps each paired
+    ``key`` to its filing dict.
+
+    Pairing is greedy on the smallest month-end-to-period-end distance,
+    and each filing is claimed at most ONCE, so a local row with no
+    filing of its own can never steal a neighbouring quarter's. Ties
+    break on (key, filing index) to keep the result deterministic
+    regardless of dict/row ordering."""
+    import pandas as pd
+    cands = []
+    for key, pe in periods:
+        if pe is None or pd.isna(pe):
+            continue
+        anchor = _period_end_anchor(pe)
+        for fi, f in enumerate(filings):
+            rd = f.get("report_date")
+            if rd is None:
+                continue
+            delta = abs((rd - anchor).days)
+            if delta <= tolerance_days:
+                cands.append((delta, key, fi))
+    cands.sort(key=lambda c: (c[0], str(c[1]), c[2]))
+    matched = {}
+    claimed = set()
+    for delta, key, fi in cands:
+        if key in matched or fi in claimed:
+            continue
+        matched[key] = filings[fi]
+        claimed.add(fi)
+    unmatched = [f for i, f in enumerate(filings) if i not in claimed]
+    return matched, unmatched
 
 
 def _fv_ea_extract(html_text):
@@ -6158,12 +6228,20 @@ class ScannerApp(tk.Tk):
             # accn-index build, and LRU eviction.
             facts = self._xbrl_get_or_fetch(cik_padded, ua)
 
-        local_periods = set()  # (year, month) for collision check
-        for _, row in df.iterrows():
-            pe = row.get("period_ending")
-            if pe is not None and pd.notna(pe):
-                pt = pd.Timestamp(pe)
-                local_periods.add((pt.year, pt.month))
+        # Pair every local row with its EDGAR filing ONCE, up front, by
+        # nearest fiscal-quarter end (see _match_filings_to_periods).
+        # Pass 1 fills the matched rows; Pass 2 considers only the
+        # filings nothing claimed. Sharing one pairing is what guarantees
+        # the two passes agree on which quarters are already covered — an
+        # exact (year, month) key used to disagree on 52/53-week filers
+        # and emit a duplicate row.
+        local_periods = (
+            [(i, df.at[i, "period_ending"]) for i in df.index]
+            if "period_ending" in df.columns else []
+        )
+        matched_filings, unmatched_filings = _match_filings_to_periods(
+            local_periods, filings,
+        )
 
         # EDGAR Pass 1 + Pass 2 only run when we have everything they
         # need (cik + filings + facts). Pass 3 (Finviz) runs below
@@ -6174,18 +6252,7 @@ class ScannerApp(tk.Tk):
         if edgar_ready:
             # --- Pass 1: fill missing fields in existing local rows ---
             for i, row in df.iterrows():
-                pe = row.get("period_ending")
-                if pe is None or pd.isna(pe):
-                    continue
-                pt = pd.Timestamp(pe)
-                matching = None
-                for f in filings:
-                    rd = f.get("report_date")
-                    if rd is None:
-                        continue
-                    if rd.year == pt.year and rd.month == pt.month:
-                        matching = f
-                        break
+                matching = matched_filings.get(i)
                 if matching is None:
                     continue
                 accession = matching.get("accession")
@@ -6239,16 +6306,34 @@ class ScannerApp(tk.Tk):
             if all_pe:
                 earliest = min(all_pe)
                 latest = max(all_pe)
+                # Report dates already on the chart. A synthetic row is
+                # stamped with the filing's file_date, so anything landing
+                # within half a quarter of an existing row is the SAME
+                # earnings event wearing a different period key — drop it
+                # rather than draw a second bar under the same x-label.
+                # Mirrors the ±45d guard Pass 4(b) already applies.
+                # Belt-and-braces: the pairing above should already have
+                # claimed that filing, so this only fires if some other
+                # normalization drifts apart in the future.
+                taken_rds = [
+                    pd.Timestamp(x)
+                    for x in df["report_date"].dropna().tolist()
+                ] if "report_date" in df.columns else []
+                synth_periods = set()
                 new_rows = []
-                for f in filings:
+                for f in unmatched_filings:
                     rd = f.get("report_date")
                     if rd is None:
                         continue
                     # Parquet-style period_ending: day-1 of the period-end month.
                     pe_norm = pd.Timestamp(year=rd.year, month=rd.month, day=1)
-                    if (pe_norm.year, pe_norm.month) in local_periods:
+                    if (pe_norm.year, pe_norm.month) in synth_periods:
                         continue
                     if pe_norm < earliest or pe_norm > latest:
+                        continue
+                    synth_rd = pd.Timestamp(f["file_date"])
+                    if any(abs((synth_rd - x).days) <= _FISCAL_QUARTER_MATCH_DAYS
+                           for x in taken_rds):
                         continue
                     accession = f.get("accession")
                     if not accession:
@@ -6266,7 +6351,7 @@ class ScannerApp(tk.Tk):
                     synth = {
                         "ticker": sym.upper().strip(),
                         "period_ending": pe_norm,
-                        "report_date": pd.Timestamp(f["file_date"]),
+                        "report_date": synth_rd,
                         "reported_eps": float(eps_val) if eps_val is not None else float("nan"),
                         "reported_rev": (
                             float(rev_val) / _XBRL_DOLLARS_PER_MILLION if rev_val is not None else float("nan")
@@ -6286,7 +6371,8 @@ class ScannerApp(tk.Tk):
                         continue
                     counts["edgar"] += edgar_cells
                     new_rows.append(synth)
-                    local_periods.add((pe_norm.year, pe_norm.month))
+                    synth_periods.add((pe_norm.year, pe_norm.month))
+                    taken_rds.append(synth_rd)
                 if new_rows:
                     df = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
                     # Recompute _anchor for new rows + re-sort.
