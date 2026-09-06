@@ -17,6 +17,8 @@ dist/
 scanner_settings.json
 wires_cache.json
 sec_tickers.json
+# Orphaned atomic-write temps (a write killed mid-flight leaves one behind)
+sec_tickers.json.*.tmp
 *.parquet
 # Backup artifacts written next to the ETF JSON maps on every refresh
 *.bak

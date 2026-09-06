@@ -20,6 +20,7 @@ Per the project memory pattern:
   during cleanup is benign and ignored.
 - Console output is ASCII-only (cp1252 console can't render arrows).
 """
+import gc
 import json
 import logging
 import os
@@ -36,7 +37,24 @@ sys.path.insert(0, str(HERE))
 logging.basicConfig(level=logging.CRITICAL)
 
 
+# Tk objects must never be finalized off the main thread: a destroyed
+# ScannerApp's tk.Variable objects sit in reference cycles, and if the
+# collector reclaims them from a daemon/worker thread (this suite starts
+# plenty -- RSS fetch pools, watch threads) their __del__ calls into Tcl from
+# the wrong thread. That raises "main thread is not in main loop" and then
+# aborts the whole process with "Tcl_AsyncDelete: async handler deleted by the
+# wrong thread" -- turning a fully green run into exit 3, intermittently.
+#
+# So: automatic collection is OFF for the harness, and we collect explicitly
+# on the main thread between tests (see _hr). By then the previous test's
+# frame is gone, which is what actually makes its app collectable --
+# _teardown() can't reclaim it because the caller still holds it in a local.
+gc.disable()
+
+
 def _hr(label):
+    # Reclaim the PREVIOUS test's Tk objects here, on the main thread.
+    gc.collect()
     print(f"--- {label} ---")
 
 
@@ -86,6 +104,10 @@ def _teardown(app):
         app.destroy()
     except Exception:
         pass
+    # Best-effort sweep on the main thread. This canNOT reclaim ``app``
+    # itself -- the caller still holds it in a local until its frame exits --
+    # which is why the real collection point is _hr(), between tests.
+    gc.collect()
 
 
 # ----- tests -----------------------------------------------------------
@@ -104,6 +126,9 @@ def test_import_and_module_shape():
         "SETTINGS_FILE", "THEMES",
         "_parse_eps_sales_surpr_cell", "_fv_ea_rows_with_yoy",
         "_YOY_MIN_BASE_EPS", "_YOY_MIN_BASE_REV_M", "_YOY_MIN_BASE_REV_RAW",
+        "MCAP_TIER_KEYS", "MCAP_TIER_BOUNDS", "MCAP_BOUNDS_RANGE",
+        "_mcap_tier", "_fmt_mcap_bound", "_mcap_tier_range_text",
+        "_validate_mcap_bounds",
     ]:
         assert hasattr(mod, name), f"scan_sec missing expected symbol: {name}"
     # Stall colour added in this audit pass — guard against accidental
@@ -1069,14 +1094,21 @@ def test_mcap_gradient_and_float_toggle():
     assert mod._parse_mcap_dollars("N/A") is None
     assert mod._parse_mcap_dollars("") is None
     assert mod._parse_mcap_dollars(None) is None
-    # Tier boundaries: <250M micro, 250M-2B small, 2B-10B mid,
-    # 10B-200B large, >=200B mega.
+    # Tier boundaries: <190M micro, 190M-250M semi-micro, 250M-2B small,
+    # 2B-10B mid, 10B-200B large, >=200B mega.
     assert mod._mcap_tier(100_000_000) == "micro"
+    assert mod._mcap_tier(189_999_999) == "micro"
+    assert mod._mcap_tier(190_000_000) == "semi_micro"
+    assert mod._mcap_tier(249_999_999) == "semi_micro"
     assert mod._mcap_tier(250_000_000) == "small"
     assert mod._mcap_tier(2_000_000_000) == "mid"
     assert mod._mcap_tier(10_000_000_000) == "large"
     assert mod._mcap_tier(200_000_000_000) == "mega"
     assert mod._mcap_tier(None) is None
+    # Six keys, one fewer cutoff than keys, pink semi-micro default.
+    assert len(mod.MCAP_TIER_KEYS) == 6
+    assert len(mod.MCAP_TIER_BOUNDS) == len(mod.MCAP_TIER_KEYS) - 1
+    assert mod.MCAP_TIER_DEFAULT_COLORS["semi_micro"] == "#f987c5"
 
     app = _make_app()
     try:
@@ -1086,6 +1118,17 @@ def test_mcap_gradient_and_float_toggle():
         assert app.mcap_gradient_enabled is True
         assert app.float_color_enabled is True
         assert set(app.mcap_tier_colors) == set(mod.MCAP_TIER_KEYS)
+        assert tuple(app.mcap_tier_bounds) == mod.MCAP_TIER_BOUNDS
+        # A semi-micro cap paints pink, and the label honors LIVE bounds
+        # rather than the module default.
+        app.current_meta = {"mcap": "200.0M"}
+        app._render_mcap_label()
+        assert app.lbl_mcap.cget("fg").lower() ==             mod.MCAP_TIER_DEFAULT_COLORS["semi_micro"].lower()
+        app.mcap_tier_bounds = (300_000_000, 400_000_000, 2_000_000_000,
+                                10_000_000_000, 200_000_000_000)
+        app._render_mcap_label()
+        assert app.lbl_mcap.cget("fg").upper() ==             mod.MCAP_TIER_DEFAULT_COLORS["micro"].upper(),             "raising the micro cutoff must reclassify a $200M cap"
+        app.mcap_tier_bounds = mod.MCAP_TIER_BOUNDS
         # The old MCap checkbox is gone.
         assert not hasattr(app, "chk_mcap") and not hasattr(app, "var_mcap")
 
@@ -1132,9 +1175,15 @@ def test_settings_swatches_show_stored_colors():
             _walk(ch, out)
         return out
 
-    def _at(widgets, row, column, cls):
+    def _at(widgets, row, column, cls, parent=None):
+        """Find a gridded widget by (row, column). ``parent`` scopes the
+        search to one container: the MCap tier rows live in a nested
+        frame and restart at row 0, which would otherwise collide with
+        the top-level rows 0-5 of the dialog."""
         for w in widgets:
             if not isinstance(w, cls):
+                continue
+            if parent is not None and w.master is not parent:
                 continue
             gi = w.grid_info()
             if gi and str(gi.get("row")) == str(row) \
@@ -1147,8 +1196,13 @@ def test_settings_swatches_show_stored_colors():
         # Two tiers pushed well away from their defaults, three left alone,
         # one float row customized and one left blank (= follow theme).
         custom = dict(mod.MCAP_TIER_DEFAULT_COLORS)
-        custom["small"] = "#00FFFF"   # cyan; the default here is orange
+        # Two tiers pushed to colors that are NOT any tier's default, so the
+        # "did it fall back to the default?" assertion below stays meaningful
+        # if the shipped palette is ever retuned.
+        custom["small"] = "#7F00FF"   # violet
         custom["micro"] = "#FF0A01"
+        assert custom["small"] != mod.MCAP_TIER_DEFAULT_COLORS["small"]
+        assert custom["micro"] != mod.MCAP_TIER_DEFAULT_COLORS["micro"]
         app.mcap_tier_colors = custom
         app.float_low_color = "#DC143C"
         app.float_high_color = ""     # blank -> theme red
@@ -1168,12 +1222,23 @@ def test_settings_swatches_show_stored_colors():
                 if isinstance(w, tk.Label):
                     gi = w.grid_info()
                     if gi and str(gi.get("column")) == "0":
-                        rows[w.cget("text")] = gi["row"]
+                        # Keep the owning container: two rows can share a
+                        # row number now that the MCap tiers are nested.
+                        rows[w.cget("text")] = (gi["row"], w.master)
+
+            # MCap tier rows carry a cutoff entry ahead of the color entry,
+            # so their (entry, swatch) columns sit one right of the Float
+            # rows', which have no cutoff.
+            _FLOAT_ROWS = ("Low color (#hex)", "High color (#hex)")
+
+            def _cols(label_text):
+                return (1, 2) if label_text in _FLOAT_ROWS else (2, 3)
 
             def _swatch_rgb(label_text):
-                row = rows.get(label_text)
-                assert row is not None, f"no settings row labeled {label_text!r}"
-                sw = _at(widgets, row, 2, tk.Label)
+                found = rows.get(label_text)
+                assert found is not None, f"no settings row labeled {label_text!r}"
+                row, host = found
+                sw = _at(widgets, row, _cols(label_text)[1], tk.Label, parent=host)
                 assert sw is not None, f"no swatch on row {label_text!r}"
                 # Resolve through Tk itself: this is the color actually
                 # rendered, not merely the string handed to config().
@@ -1193,24 +1258,25 @@ def test_settings_swatches_show_stored_colors():
 
             # The customized tier must NOT be showing its default, which is
             # the exact symptom this guards against.
-            assert _swatch_rgb("Small ($250M-$2B) (#hex)") != \
+            assert _swatch_rgb("Small (#hex)") != \
                 dlg.winfo_rgb(mod.MCAP_TIER_DEFAULT_COLORS["small"]), \
                 "small-tier swatch fell back to the default color"
 
             # And the live trace still works after the initial paint.
-            small_row = rows["Small ($250M-$2B) (#hex)"]
-            ent = _at(widgets, small_row, 1, tk.Entry)
+            small_row, small_host = rows["Small (#hex)"]
+            ent = _at(widgets, small_row, _cols("Small (#hex)")[0], tk.Entry,
+                      parent=small_host)
             assert ent is not None, "no entry on the small-tier row"
             ent.delete(0, "end")
             ent.insert(0, "#123456")
             app.update_idletasks()
-            assert _swatch_rgb("Small ($250M-$2B) (#hex)") == \
+            assert _swatch_rgb("Small (#hex)") == \
                 dlg.winfo_rgb("#123456"), "swatch did not follow a live edit"
             # A half-typed value falls back to the row's default, not to junk.
             ent.delete(0, "end")
             ent.insert(0, "#12")
             app.update_idletasks()
-            assert _swatch_rgb("Small ($250M-$2B) (#hex)") == \
+            assert _swatch_rgb("Small (#hex)") == \
                 dlg.winfo_rgb(mod.MCAP_TIER_DEFAULT_COLORS["small"]), \
                 "incomplete hex did not fall back to the tier default"
             print("settings swatches OK")
@@ -1218,6 +1284,298 @@ def test_settings_swatches_show_stored_colors():
             dlg.destroy()
     finally:
         _teardown(app)
+
+
+def test_mcap_tier_bounds_editable():
+    """The market-cap cutoffs are user-editable, so they must round-trip
+    through settings, be rejected when they don't strictly ascend, and never
+    be half-applied from a malformed stored value."""
+    _hr("mcap tier bounds are editable + validated")
+    import tkinter as tk
+    import scan_sec as mod
+
+    # Suffixed entry format round-trips through the finviz parser.
+    for text, dollars in (("190M", 190_000_000), ("2B", 2_000_000_000),
+                          ("200B", 200_000_000_000), ("1.5B", 1_500_000_000)):
+        assert mod._parse_mcap_dollars(text) == dollars, text
+        assert mod._fmt_mcap_bound(dollars) == text, dollars
+
+    # Range text is derived from the LIVE bounds, not baked into the label.
+    assert mod._mcap_tier_range_text("micro") == "(<$190M)"
+    assert mod._mcap_tier_range_text("semi_micro") == "($190M-$250M)"
+    assert mod._mcap_tier_range_text("mega") == "($200B+)"
+    custom_b = (50_000_000, 250_000_000, 2_000_000_000,
+                10_000_000_000, 200_000_000_000)
+    assert mod._mcap_tier_range_text("micro", custom_b) == "(<$50M)"
+
+    # Validation: a good tuple passes; descending / short / out-of-range fail.
+    ok, why = mod._validate_mcap_bounds(mod.MCAP_TIER_BOUNDS)
+    assert ok == tuple(float(v) for v in mod.MCAP_TIER_BOUNDS) and why is None
+    for bad in ((300_000_000, 250_000_000, 2e9, 1e10, 2e11),   # descending
+                (190_000_000, 190_000_000, 2e9, 1e10, 2e11),   # equal
+                (190_000_000, 250_000_000, 2e9),               # too short
+                (1.0, 250_000_000, 2e9, 1e10, 2e11),           # below floor
+                ("x", 250_000_000, 2e9, 1e10, 2e11)):          # non-numeric
+        got, why = mod._validate_mcap_bounds(bad)
+        assert got is None and why, "bad bounds accepted: %r" % (bad,)
+
+    def _kids(widget, cls, out):
+        for ch in widget.winfo_children():
+            if isinstance(ch, cls):
+                out.append(ch)
+            _kids(ch, cls, out)
+        return out
+
+    def _body():
+        app = _make_app()
+        try:
+            app.open_settings_dialog()
+            app.update_idletasks()
+            dlg = [w for w in app.winfo_children()
+                   if isinstance(w, tk.Toplevel) and w.title() == "Settings"][-1]
+            try:
+                dlg.withdraw()
+                entries = _kids(dlg, tk.Entry, [])
+                labels = _kids(dlg, tk.Label, [])
+                buttons = _kids(dlg, tk.Button, [])
+
+                # The five cutoff entries open showing the live bounds.
+                shown = [e.get() for e in entries]
+                for want in ("190M", "250M", "2B", "10B", "200B"):
+                    assert want in shown, "cutoff %s not shown; got %r" % (want, shown)
+                # Mega is open-ended: a dash, not an editable cutoff.
+                assert any(l.cget("text") == "—" for l in labels), \
+                    "mega tier should show a dash instead of a cutoff entry"
+
+                # Two buttons read "Save": the Polygon API-key one and the
+                # dialog's own. Pick the one sharing a parent with "Cancel".
+                cancel = [b for b in buttons if b.cget("text") == "Cancel"][0]
+                save = [b for b in buttons if b.cget("text") == "Save"
+                        and b.master is cancel.master][0]
+                micro_ent = [e for e in entries if e.get() == "190M"][0]
+                before = tuple(app.mcap_tier_bounds)
+
+                # Non-ascending edit: must be refused, and must change nothing.
+                # A silently-accepted one makes a whole band unreachable.
+                micro_ent.delete(0, "end")
+                micro_ent.insert(0, "300M")        # now above semi-micro's 250M
+                save.invoke()
+                assert tuple(app.mcap_tier_bounds) == before, \
+                    "a descending cutoff set was applied anyway"
+                assert dlg.winfo_exists(), "dialog closed on an invalid save"
+                assert any("must increase" in str(l.cget("text"))
+                           for l in labels), "no ascending-order error shown"
+
+                # Unparseable cutoff is refused the same way.
+                micro_ent.delete(0, "end")
+                micro_ent.insert(0, "not a number")
+                save.invoke()
+                assert tuple(app.mcap_tier_bounds) == before
+                assert any("must look like" in str(l.cget("text"))
+                           for l in labels), "no format error shown"
+
+                # Correct it and save for real.
+                micro_ent.delete(0, "end")
+                micro_ent.insert(0, "150M")
+                save.invoke()
+                assert tuple(app.mcap_tier_bounds)[0] == 150_000_000.0
+                assert mod._mcap_tier(160_000_000,
+                                      app.mcap_tier_bounds) == "semi_micro"
+            finally:
+                try:
+                    dlg.destroy()
+                except tk.TclError:
+                    pass
+            # on_close persists the edited bounds.
+            app.on_close()
+            data = json.loads(mod.SETTINGS_FILE.read_text(encoding="utf-8"))
+            assert data["mcap_tier_bounds"][0] == 150_000_000.0
+            # A malformed stored list must not be half-applied.
+            data["mcap_tier_bounds"] = [1, 2]
+            mod.SETTINGS_FILE.write_text(json.dumps(data), encoding="utf-8")
+        finally:
+            # on_close() saves + destroys the window but leaves the fetcher
+            # and the watch thread running; without the full teardown the
+            # leftover daemon thread races the Tk interpreter at exit
+            # (Tcl_AsyncDelete: async handler deleted by the wrong thread).
+            _teardown(app)
+
+        app2 = _make_app()
+        try:
+            assert tuple(app2.mcap_tier_bounds) == mod.MCAP_TIER_BOUNDS, \
+                "a malformed stored bounds list must fall back to defaults"
+        finally:
+            _teardown(app2)
+        print("mcap tier bounds OK")
+
+    _backup_live_settings_then(_body)
+
+
+def test_stockanalysis_devalue_parsing():
+    """stockanalysis.com dropped its JSON API for SvelteKit's flat 'devalue'
+    data route (every old api.stockanalysis.com URL now answers 404). Offline
+    coverage of the decoder, the row cleanup, and the reporting contract that
+    let the outage go unnoticed."""
+    _hr("stockanalysis devalue payload parsing")
+    import etf_scraper as S
+    from etf_holdings import derive_sector_label
+
+    def _flatten(value):
+        """Encode a nested structure the way SvelteKit's devalue does: one
+        flat array in which every integer is an index back into itself.
+        Building the fixture rather than hand-indexing it means the test
+        can't quietly drift into asserting against a malformed payload."""
+        flat = []
+
+        def add(v):
+            idx = len(flat)
+            flat.append(None)
+            if isinstance(v, dict):
+                flat[idx] = {k: add(x) for k, x in v.items()}
+            elif isinstance(v, list):
+                flat[idx] = [add(x) for x in v]
+            else:
+                flat[idx] = v
+            return idx
+
+        add(value)
+        return flat
+
+    spy = {"nodes": [
+        # A leading node with no holdings key -- must be skipped, not read.
+        {"type": "data", "data": _flatten({"unrelated": "ignore me"})},
+        {"type": "data", "data": _flatten({
+            "holdings": [
+                {"n": "NVIDIA Corporation", "s": "$NVDA", "as": "7.94%"},
+                {"n": "Apple Inc.", "s": "$AAPL", "as": "7.01%"},
+            ],
+            "sectors": [{"n": "Technology", "w": 34.24}],
+            "infoTable": {"category": "Large Blend", "count": 505},
+            "date": "Aug 19, 2026",
+        })},
+    ]}
+    data = S._extract_holdings_node(spy)
+    assert data is not None, "holdings node not found"
+    assert [h["s"] for h in data["holdings"]] == ["$NVDA", "$AAPL"]
+    assert data["infoTable"]["category"] == "Large Blend"
+    assert data["date"] == "Aug 19, 2026"
+    # 34.24% top sector is below the 60% prefix floor -> no label.
+    assert derive_sector_label(data["infoTable"]["category"],
+                               data["sectors"]) == ""
+    assert derive_sector_label("Technology",
+                               [{"n": "Technology", "w": 99.9}]) == "Tech"
+
+    # Sentinels, tagged types, and a SELF-REFERENTIAL index (must terminate).
+    assert S._devalue_unflatten([{"a": -2, "b": -1}])["a"] is None
+    assert S._devalue_unflatten([["Date", 1], "2026-01-01"]) == ["Date", 1]
+    cyc = S._devalue_unflatten([{"self": 0, "v": 1}, "x"])
+    assert cyc["v"] == "x" and cyc["self"] is cyc, "cycle not memoized"
+    for junk in (None, {}, [], "nope"):
+        assert S._devalue_unflatten(junk) is None
+    assert S._extract_holdings_node(
+        {"nodes": [{"type": "data", "data": [{"x": 1}, 2]}]}) is None
+
+    # --- row cleanup + the URL shape, through the real fetch client ---
+    class _Resp:
+        status_code = 200
+
+        def __init__(self, payload):
+            self._b = json.dumps(payload).encode()
+
+        def iter_content(self, chunk_size=0):
+            yield self._b
+
+        def close(self):
+            pass
+
+    # "#GDX" (an ETF-of-ETFs holding) must lose its marker; the swap contract
+    # artifact "B.0 08.27.26" must not be mistaken for a ticker.
+    payload = {"nodes": [{"type": "data", "data": _flatten({
+        "holdings": [
+            {"n": "#GDX", "s": "#GDX", "as": "53.36%"},
+            {"n": "SOME SWAP", "s": "B.0 08.27.26", "as": "36.14%"},
+            {"n": "NVIDIA Corporation", "s": "$NVDA", "as": "8.42%"},
+            {"n": "#GDX", "s": "#GDX", "as": "1.00%"},     # duplicate -> dropped
+        ],
+        "infoTable": {"category": "Trading--Leveraged Equity", "count": 17},
+        "date": "Aug 13, 2026",
+    })}]}
+
+    class _Sess:
+        headers = {}
+        last_url = None
+
+        def get(self, url, **kw):
+            type(self).last_url = url
+            return _Resp(payload)
+
+    sess = _Sess()
+    prof = S.fetch_stockanalysis_holdings(sess, "NUGT")
+    assert "/etf/nugt/holdings/__data.json" in _Sess.last_url, \
+        "URL must be lowercased (an uppercase path 301-redirects)"
+    got = [h["ticker"] for h in prof["holdings"]]
+    assert got == ["GDX", "NVDA"], "expected ['GDX','NVDA'], got %r" % (got,)
+    assert prof["count"] == 17 and prof["date"] == "Aug 13, 2026"
+
+    # The reporting contract: a non-200 RAISES so the refresh can record why,
+    # while a 200 carrying no holdings node is a quiet "not an ETF".
+    class _S404(_Sess):
+        def get(self, url, **kw):
+            r = _Resp({"status": 404})
+            r.status_code = 404
+            return r
+
+    try:
+        S.fetch_stockanalysis_holdings(_S404(), "SPY")
+        raise AssertionError("a 404 must raise, not return None")
+    except S.HoldingsFetchError as exc:
+        assert "404" in str(exc)
+
+    class _SStock(_Sess):
+        def get(self, url, **kw):
+            return _Resp({"nodes": [{"type": "data", "data": [{"quote": 1}, 2]}]})
+
+    assert S.fetch_stockanalysis_holdings(_SStock(), "AAPL") is None
+
+    # A 100% failure must be LOUD and its error list capped -- the silent
+    # version of this is why the map sat stale for months.
+    def _always_404(*_a, **_k):
+        raise S.HoldingsFetchError("HTTP 404")
+
+    _orig = S.fetch_stockanalysis_holdings
+    S.fetch_stockanalysis_holdings = _always_404
+    try:
+        lines = []
+        profs, errs = S.scrape_etf_holdings(
+            lines.append,
+            universe=dict.fromkeys(["E%d" % i for i in range(40)], None),
+            pace=0,
+        )
+    finally:
+        S.fetch_stockanalysis_holdings = _orig
+    assert profs == {}, "no profiles should survive a total outage"
+    assert any("0/40" in l and "EVERY ETF" in l for l in lines), \
+        "a 100% failure must be called out in the refresh log"
+    assert errs[0].startswith("TOTAL FAILURE"), errs[:1]
+    assert len(errs) <= S._HOLDINGS_MAX_STORED_ERRORS + 2, \
+        "stored errors not capped: %d" % len(errs)
+    assert errs[-1].startswith("(+"), errs[-1]
+
+    # ...and a partial failure still preserves the prior good profile.
+    prior = {"XLK": {"mult": None, "category": "Technology",
+                     "sector_label": "Tech", "count": 76, "date": "old",
+                     "holdings": [{"ticker": "NVDA", "name": "", "weight": 1.0},
+                                  {"ticker": "AAPL", "name": "", "weight": 1.0}]}}
+    S.fetch_stockanalysis_holdings = _always_404
+    try:
+        profs, errs = S.scrape_etf_holdings(
+            lambda _l: None, universe={"XLK": None},
+            existing_profiles=prior, pace=0,
+        )
+    finally:
+        S.fetch_stockanalysis_holdings = _orig
+    assert profs["XLK"]["holdings"], "a failed fetch must preserve prior holdings"
+    print("stockanalysis devalue parsing OK")
 
 
 def test_cik_resolver_close_joins_refresh_thread():
@@ -2163,6 +2521,77 @@ def test_wire_feeds_and_circuit_breaker():
     print("wire roster + circuit breaker OK")
 
 
+def test_rate_limited_wire_is_not_left_on_waiting_grey():
+    """A wire that 429s must go RED, not sit on the startup grey.
+
+    The two mechanisms disagreed: a 429 trips the circuit breaker on the
+    FIRST failure (for up to RETRY_AFTER_MAX = 1h), but turning the dot red
+    needed FAIL_STREAK_TO_ERR = 2 consecutive failures. While the circuit is
+    open the feed is skipped entirely, so the streak could never reach 2 --
+    pinning Stocktitan, the one feed that rate-limits, on 'None' (grey, "not
+    tried yet") for a whole session while it was in fact refusing us."""
+    _hr("a rate-limited wire reports ERR, not startup grey")
+    import logging
+    import scan_sec as mod
+    logging.disable(logging.WARNING)
+    try:
+        W = mod.RSSWorker
+
+        # The exact reported bug: cold worker, first pull 429s.
+        w = W()
+        assert w.statuses["ST"] is None, "fresh worker should start unknown"
+        w._apply_status("ST", "ERR", retry_after=208.0)
+        assert w.statuses["ST"] == "ERR", \
+            "a 429 that opens the circuit must show ERR, not the startup grey"
+        assert w.circuit_state().get("ST", 0) > 0, "circuit should be open"
+
+        # A feed that has never succeeded must not impersonate one that is
+        # still warming up, even without a 429.
+        w = W()
+        w._apply_status("PR", "ERR")
+        assert w.statuses["PR"] == "ERR", \
+            "first failure with no prior status must show ERR"
+
+        # ...but the hysteresis it was protecting is intact: a KNOWN-GOOD
+        # wire still absorbs an isolated blip without flapping red.
+        w = W()
+        w._apply_status("YH", "OK")
+        w._apply_status("YH", "ERR")
+        assert w.statuses["YH"] == "OK", \
+            "one blip on a healthy wire must not turn it red"
+        assert not w.circuit_state(), "one blip must not open the circuit"
+        w._apply_status("YH", "ERR")
+        assert w.statuses["YH"] == "ERR", \
+            "FAIL_STREAK_TO_ERR consecutive failures must turn it red"
+
+        # A green wire that gets 429'd is not polled at all for the cooldown,
+        # so it must stop claiming to be healthy.
+        w = W()
+        w._apply_status("ST", "OK")
+        w._apply_status("ST", "ERR", retry_after=208.0)
+        assert w.statuses["ST"] == "ERR", \
+            "an open circuit must not keep showing the last green status"
+
+        # Recovery still closes the circuit and resets the streak.
+        w._apply_status("ST", "OK")
+        assert w.statuses["ST"] == "OK" and not w.circuit_state(), \
+            "a success must close the circuit and clear the streak"
+        assert w._fail_streaks["ST"] == 0
+
+        # The plain-failure circuit trip still needs CIRCUIT_TRIP_FAILURES,
+        # and a 429 must not be double-counted into that path.
+        w = W()
+        for _ in range(W.CIRCUIT_TRIP_FAILURES - 1):
+            w._apply_status("PR", "ERR")
+        assert not w.circuit_state(), "circuit tripped too early"
+        w._apply_status("PR", "ERR")
+        assert w.circuit_state().get("PR", 0) > 0, \
+            "CIRCUIT_TRIP_FAILURES consecutive failures must open the circuit"
+        print("rate-limited wire status OK")
+    finally:
+        logging.disable(logging.NOTSET)
+
+
 def test_status_indicators_track_feed_roster():
     """The indicator row is built from RSSWorker.FEEDS, so a feed swap
     can't leave a dead box (or a missing one) on screen."""
@@ -2694,6 +3123,8 @@ def main():
     test_report_day_freshness_marker()
     test_mcap_gradient_and_float_toggle()
     test_settings_swatches_show_stored_colors()
+    test_mcap_tier_bounds_editable()
+    test_stockanalysis_devalue_parsing()
     test_finviz_ea_synthesizer()
     test_eps_sales_surpr_cell_parser()
     test_finviz_ea_yoy_small_base_floor()
@@ -2712,6 +3143,7 @@ def main():
     test_geometry_clamped_to_visible_desktop()
     # 2026-08-11 wire swap: GlobeNewswire -> Stocktitan + circuit breaker
     test_wire_feeds_and_circuit_breaker()
+    test_rate_limited_wire_is_not_left_on_waiting_grey()
     test_status_indicators_track_feed_roster()
     # v2.3.0: link marker + version metadata
     test_link_marker_in_both_trees()
@@ -2764,3 +3196,11 @@ if __name__ == "__main__":
         _fail(str(e))
     except Exception as e:
         _fail(f"unexpected: {type(e).__name__}: {e}")
+    # Every test passed. Belt-and-braces on top of the gc discipline above:
+    # interpreter finalization runs one last collection, and any Tk object
+    # reclaimed there executes its destructor after Tcl is already torn down.
+    # This harness advertises "exit 0 = all green", so the exit code reports
+    # the tests rather than a shutdown race. Flush first -- _exit doesn't.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)

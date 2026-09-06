@@ -1,6 +1,6 @@
 # Morning Scanner
 
-![version](https://img.shields.io/badge/version-2.4.2-blue) ![platform](https://img.shields.io/badge/platform-Windows-lightgrey) ![license](https://img.shields.io/badge/license-MIT-green)
+![version](https://img.shields.io/badge/version-2.5.0-blue) ![platform](https://img.shields.io/badge/platform-Windows-lightgrey) ![license](https://img.shields.io/badge/license-MIT-green)
 
 A real-time news, SEC filing, and earnings scanner for active traders on Windows. Morning Scanner floats above your charting platform, automatically detects which ticker you're viewing, and pulls up relevant news headlines, SEC filing activity, float and short data, earnings proximity, and more — switching automatically as you change symbols.
 
@@ -27,7 +27,7 @@ The window watcher runs on a dedicated daemon thread with a stall watchdog, so a
   - **Shelf registration** — flags active S-3 filings. Click to view on EDGAR.
   - **Unknown ≠ negative** — when SEC can't be reached, or no CIK resolves for the symbol, both indicators show an em-dash (`Shelf: —`, `SEC: —`) rather than asserting `Shelf: NO`. A transient SEC error is retried on the next symbol change instead of being remembered for the session.
 - **CIK resolution** — maps tickers to SEC CIK numbers via the official `sec.gov/files/company_tickers.json` endpoint with fuzzy name-matching fallback; cached locally.
-- **Market cap** — always shown in the header in a large font, optionally colored by a 5-tier stepped gradient (micro / small / mid / large / mega, bright-red → bright-green). The gradient toggle and all five tier colors are tunable in **Settings → Market Cap**.
+- **Market cap** — always shown in the header in a large font, optionally colored by a 6-tier stepped gradient (red at the bottom through to deep green at the top). The toggle, all six tier colors, **and the five cutoffs between them** are tunable in **Settings → Market Cap** (see [Market-cap tiers](#market-cap-tiers)).
 - **Float & short data** — shares float (toggleable via the **Float** checkbox, optionally colored by a low-float cutoff) and short-float percentage from Finviz. The cutoff, the low/high colors, and the coloration on/off toggle are tunable in **Settings → Float**.
 - **Earnings row** — earnings date, EPS surprise, sales surprise, and EPS / revenue YoY on a dedicated togglable row, color-coded by proximity, with a future-date suppression safeguard.
 - **Earnings chart** — double-click any earnings label to open a per-quarter chart (YoY % and Surprise % bars on outlier-robust axes, click-to-highlight a quarter, live color editor). The chart shows a configurable history window — 5 years by default — and can draw that window at a **fixed** width so bars stay the same size on every ticker (see [Earnings chart history window](#earnings-chart-history-window)). Reads an optional earnings-history parquet you supply (see [Optional earnings data](#optional-earnings-data)).
@@ -46,8 +46,9 @@ News origins fail in a way that's easy to miss: they accept the connection and t
 - **`429` is treated as an instruction, not a failure.** A rate-limited origin trips the breaker on the *first* response and is left alone for exactly the `Retry-After` it asked for. Retrying through a 429 only restarts the limiter's window.
 - **Per-feed poll floors.** Origins rate-limit at very different rates, so each feed carries its own minimum interval. Stocktitan is polled every 5 minutes rather than every 60 seconds; its pulls are ~100 items deep, so nothing is missed.
 - **Short timeouts.** Every healthy feed answers in well under a second, so the request timeout is 6 s — a longer one only buys latency when an origin goes dark.
+- **A dot never overstates a wire.** A feed that is being skipped — because it rate-limited us, or because the breaker is open — reads red, not green and not the grey "still starting up" shade. Those two states used to disagree: a `429` opened the breaker on the first refusal, but colouring the dot red needed two *consecutive* failures, and a skipped feed can never accumulate the second one. A rate-limiting wire could therefore sit on startup-grey for an entire session while delivering nothing.
 
-Net effect: one dead source costs you one grey/red dot, not slower news everywhere.
+Net effect: one dead source costs you one red dot, not slower news everywhere.
 
 > **Note on GlobeNewswire:** it was replaced by Stocktitan on 2026-08-11. Its edge began completing the TLS handshake and then never responding — every path on the host, including the homepage, read-timed-out, and a VPN made no difference. Stocktitan also carries a ticker in ~94% of its headlines (vs ~37% for the other wires), which is what the per-symbol news filter matches on.
 
@@ -60,6 +61,23 @@ A deep-history ticker charts 100+ quarters, which squeezes the bars you actually
 
 A padded slot is deliberately **not** the same thing as a missing quarter: quarters the app knows about but has no data for render `??`, while padding older than the ticker's history is simply blank. The window applies to Historical Lookup charts too — and if the date you looked up is older than the window, the window is extended back to reach it rather than trimming away the quarter you were looking for.
 
+## Market-cap tiers
+
+The header's market-cap value is painted by which band it falls in. Six bands ship by default:
+
+| Tier | Default range | Default color |
+| --- | --- | --- |
+| Micro | `< $190M` | `#FF2B2B` bright red |
+| Semi-micro | `$190M – $250M` | `#f987c5` pink |
+| Small | `$250M – $2B` | `#00FFFF` cyan |
+| Mid | `$2B – $10B` | `#CFF5C8` pale green |
+| Large | `$10B – $200B` | `#5FD35F` green |
+| Mega | `$200B +` | `#0b6623` deep forest green |
+
+Every one of those is editable in **Settings → Market Cap**. Each row carries the **top** of its band (exclusive) plus its color; Mega shows a dash because it is open-ended, and **Reset ranges** restores the defaults above.
+
+Cutoffs accept the same suffixed form the data itself uses — `190M`, `2B`, `200B`, `1.5B`, or a plain `250000000`. A set that does not **strictly ascend** is refused with the offending pair named, rather than saved: an out-of-order cutoff would make a whole band unreachable and silently mis-color every ticker in it. Colors and cutoffs persist independently, so changing a range never disturbs a palette you have tuned.
+
 ## Data integrity
 
 This is a trading tool, so the design bias throughout is **show nothing rather than show something wrong**:
@@ -69,6 +87,7 @@ This is a trading tool, so the design bias throughout is **show nothing rather t
 - **The chart shows the ticker in its title.** The earnings pop-out snapshots its symbol, CIK, and metadata when you open it, so changing charts mid-load can never merge another company's figures into it; a load whose symbol went stale is discarded.
 - **A bad data file degrades, it doesn't break.** The optional earnings parquet is validated and type-normalized once when loaded; a renamed column or a drifted dtype leaves the earnings row blank instead of silently stopping the news list from updating.
 - **Non-finite values never render.** `nan` / `inf` reaching a percentage or market-cap cell is treated as no-data rather than formatted as a magnitude.
+- **A refresh that fetched nothing says so.** A data refresh reports per-source failures rather than swallowing them, and one in which *every* item failed is called out explicitly instead of stamping a fresh timestamp on untouched data. A stale map that looks freshly updated is worse than one that admits it is stale.
 
 ## Requirements
 
@@ -147,6 +166,8 @@ This bundles Tcl/Tk, the `single_stock_etfs.json` + `etf_holdings.json` seeds, a
 | [PRNewswire](https://www.prnewswire.com) · [Stocktitan](https://www.stocktitan.net) · [Yahoo Finance](https://finance.yahoo.com) | Press-release and market-news headlines (RSS) |
 | [Polygon](https://polygon.io) | Optional historical news for the Historical Lookup |
 | [stockanalysis.com](https://stockanalysis.com) | Multi-holding ETF holdings, sector mix, and category for the ETF indicators (refreshed from Settings) |
+
+> **Note on the ETF holdings source:** stockanalysis.com retired its `api.stockanalysis.com` JSON API in 2026 (every symbol began answering `404`), which silently froze the holdings map. The scanner now reads the site's own route-data endpoint instead, and a refresh in which *every* fund fails is called out explicitly in the refresh log and recorded in the map's error list rather than passing for a clean run.
 
 ## Limitations
 

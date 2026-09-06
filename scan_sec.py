@@ -6,7 +6,7 @@
 # running build can be identified without checking file dates, and baked into
 # the exe's file-version resource via TNS.spec / version_info.txt. Keep it in
 # step with the git tag (vX.Y.Z).
-__version__ = "2.4.2"
+__version__ = "2.5.0"
 
 import sys
 import os
@@ -268,28 +268,40 @@ LOW_FLOAT_RANGE_M = (0.1, 100_000.0)  # cutoff entered in MILLIONS of shares
 
 # Market-cap stepped gradient. MCap is always shown in the header (in the
 # large font Float used to occupy); when the gradient is enabled it's
-# painted with one of five tier colors keyed by USD market cap. The ramp
-# runs bright-red (micro) -> bright-green (mega) with a very-light-green
-# midpoint. All five colors + the on/off toggle are user-tunable via the
-# Settings dialog. Tier boundaries (USD):
-#   micro  < 250M | small 250M-2B | mid 2B-10B | large 10B-200B | mega >=200B
-MCAP_TIER_BOUNDS = (250_000_000, 2_000_000_000,
+# painted with one of six tier colors keyed by USD market cap: red at the
+# bottom, through pink / cyan, into progressively deeper greens at the top.
+# All six colors, all five cutoffs, and the on/off toggle are
+# user-tunable via the Settings dialog. DEFAULT tier boundaries (USD):
+#   micro <190M | semi-micro 190M-250M | small 250M-2B | mid 2B-10B
+#   | large 10B-200B | mega >=200B
+# The bounds tuple always holds len(MCAP_TIER_KEYS) - 1 entries: each is the
+# EXCLUSIVE upper edge of the tier at the same index, and the last key is the
+# open-ended top band.
+MCAP_TIER_BOUNDS = (190_000_000, 250_000_000, 2_000_000_000,
                     10_000_000_000, 200_000_000_000)
-MCAP_TIER_KEYS = ("micro", "small", "mid", "large", "mega")
+MCAP_TIER_KEYS = ("micro", "semi_micro", "small", "mid", "large", "mega")
 MCAP_TIER_DEFAULT_COLORS = {
-    "micro": "#FF2B2B",  # bright red
-    "small": "#FF9030",  # orange
-    "mid":   "#CFF5C8",  # very light green
-    "large": "#5FD35F",  # medium green
-    "mega":  "#00C400",  # bright green
+    "micro":      "#FF2B2B",  # bright red
+    "semi_micro": "#f987c5",  # pink
+    "small":      "#00FFFF",  # cyan
+    "mid":        "#CFF5C8",  # very light green
+    "large":      "#5FD35F",  # medium green
+    "mega":       "#0b6623",  # deep forest green
 }
+# Display names only. The range text is derived from the LIVE bounds by
+# _mcap_tier_range_text — with cutoffs user-editable, a label baking in
+# "(<$250M)" would go stale the moment someone changed it.
 MCAP_TIER_LABELS = {
-    "micro": "Micro (<$250M)",
-    "small": "Small ($250M-$2B)",
-    "mid":   "Mid ($2B-$10B)",
-    "large": "Large ($10B-$200B)",
-    "mega":  "Mega ($200B+)",
+    "micro":      "Micro",
+    "semi_micro": "Semi-micro",
+    "small":      "Small",
+    "mid":        "Mid",
+    "large":      "Large",
+    "mega":       "Mega",
 }
+# Accepted span for a user-entered cutoff ($1M .. $100T). Wide on purpose —
+# the real guard is that the five cutoffs must strictly ascend.
+MCAP_BOUNDS_RANGE = (1_000_000.0, 100_000_000_000_000.0)
 
 
 def _parse_mcap_dollars(text):
@@ -312,17 +324,79 @@ def _parse_mcap_dollars(text):
         return None
 
 
-def _mcap_tier(dollars):
+def _mcap_tier(dollars, bounds=None):
     """Return the tier key ('micro'..'mega') for a USD market cap, or
-    None if ``dollars`` is None."""
+    None if ``dollars`` is None.
+
+    ``bounds`` defaults to the module constant; the app passes its own
+    user-edited tuple. Walking the keys rather than unpacking fixed names
+    keeps this correct for any number of bins."""
     if dollars is None:
         return None
-    b_micro, b_small, b_mid, b_large = MCAP_TIER_BOUNDS
-    if dollars < b_micro: return "micro"
-    if dollars < b_small: return "small"
-    if dollars < b_mid: return "mid"
-    if dollars < b_large: return "large"
-    return "mega"
+    bounds = bounds or MCAP_TIER_BOUNDS
+    for key, edge in zip(MCAP_TIER_KEYS, bounds):
+        if dollars < edge:
+            return key
+    return MCAP_TIER_KEYS[-1]
+
+
+def _fmt_mcap_bound(dollars):
+    """Render a USD cutoff back into the compact suffixed form the Settings
+    entries use ('190M', '2B', '200B'). Inverse of _parse_mcap_dollars."""
+    try:
+        v = float(dollars)
+    except (TypeError, ValueError):
+        return ""
+    if not math.isfinite(v):
+        return ""
+    for mult, suffix in ((1_000_000_000_000, "T"), (1_000_000_000, "B"),
+                         (1_000_000, "M"), (1_000, "K")):
+        if abs(v) >= mult:
+            return f"{v / mult:g}{suffix}"
+    return f"{v:g}"
+
+
+def _mcap_tier_range_text(tier, bounds=None):
+    """Human range for a tier built from the LIVE bounds — '(<$190M)',
+    '($190M-$250M)', '($200B+)'. Used for the Settings row hints so an
+    edited cutoff is reflected the next time the dialog opens."""
+    bounds = bounds or MCAP_TIER_BOUNDS
+    try:
+        i = MCAP_TIER_KEYS.index(tier)
+    except ValueError:
+        return ""
+    lo = _fmt_mcap_bound(bounds[i - 1]) if i > 0 else None
+    hi = _fmt_mcap_bound(bounds[i]) if i < len(bounds) else None
+    if lo is None:
+        return f"(<${hi})"
+    if hi is None:
+        return f"(${lo}+)"
+    return f"(${lo}-${hi})"
+
+
+def _validate_mcap_bounds(values):
+    """Validate a candidate cutoff sequence. Returns (tuple, None) when it is
+    usable, else (None, reason). Enforces the one rule that actually matters:
+    strictly ascending, so no band can be made unreachable."""
+    try:
+        vals = [float(v) for v in values]
+    except (TypeError, ValueError):
+        return None, "cutoffs must be numbers"
+    if len(vals) != len(MCAP_TIER_KEYS) - 1:
+        return None, f"expected {len(MCAP_TIER_KEYS) - 1} cutoffs"
+    lo, hi = MCAP_BOUNDS_RANGE
+    for key, v in zip(MCAP_TIER_KEYS, vals):
+        if not math.isfinite(v) or not (lo <= v <= hi):
+            return None, (f"{MCAP_TIER_LABELS[key]} cutoff must be between "
+                          f"{_fmt_mcap_bound(lo)} and {_fmt_mcap_bound(hi)}")
+    for i in range(1, len(vals)):
+        if vals[i] <= vals[i - 1]:
+            return None, (f"cutoffs must increase: "
+                          f"{MCAP_TIER_LABELS[MCAP_TIER_KEYS[i]]} "
+                          f"({_fmt_mcap_bound(vals[i])}) is not above "
+                          f"{MCAP_TIER_LABELS[MCAP_TIER_KEYS[i - 1]]} "
+                          f"({_fmt_mcap_bound(vals[i - 1])})")
+    return tuple(vals), None
 
 # Default location of the earnings-history parquet produced by an
 # upstream earnings pipeline. It carries `yoy_eps_pct` + `yoy_rev_pct`
@@ -902,19 +976,35 @@ class RSSWorker:
             return
         streak = self._fail_streaks.get(code, 0) + 1
         self._fail_streaks[code] = streak
-        if streak >= self.FAIL_STREAK_TO_ERR:
-            self.statuses[code] = "ERR"
         if retry_after is not None:
             delay = max(0.0, min(float(retry_after), self.RETRY_AFTER_MAX))
             self._circuit_until[code] = time.time() + delay
             _log.warning("RSS %s: origin rate-limited us (429); honouring "
                          "its Retry-After of %.0fs", code, delay)
-            return
-        if streak >= self.CIRCUIT_TRIP_FAILURES:
+        elif streak >= self.CIRCUIT_TRIP_FAILURES:
             self._circuit_until[code] = time.time() + self.CIRCUIT_COOLDOWN
             _log.warning("RSS %s: %d consecutive failures — skipping it for "
                          "%.0f min (one probe after that)",
                          code, streak, self.CIRCUIT_COOLDOWN / 60.0)
+        # Displayed status. The streak hysteresis exists to stop a
+        # KNOWN-GOOD wire flapping red on an isolated blip, so it only
+        # applies when there is a good status to protect AND we will
+        # actually retry next cycle. Two cases must go red immediately:
+        #
+        #   * No prior status. There is nothing to protect, and ``None``
+        #     is the "still starting up" grey — a wire that has never once
+        #     succeeded must not impersonate one that is still warming up.
+        #   * Circuit open. We are not contacting this origin at all (a
+        #     429 opens it on the FIRST failure, for up to RETRY_AFTER_MAX
+        #     = 1 hour), so the streak physically cannot advance to
+        #     FAIL_STREAK_TO_ERR. That is what pinned Stocktitan — the one
+        #     feed that rate-limits — on grey for a whole session: green
+        #     would claim health it doesn't have, and grey claimed it
+        #     hadn't been tried yet. Neither was true; it was refusing us.
+        if (streak >= self.FAIL_STREAK_TO_ERR
+                or self.statuses.get(code) is None
+                or self._circuit_until.get(code, 0.0) > time.time()):
+            self.statuses[code] = "ERR"
 
     def circuit_state(self):
         """``{code: seconds_until_next_probe}`` for open circuits only.
@@ -3799,6 +3889,7 @@ class ScannerApp(tk.Tk):
         # Market-cap stepped gradient: on/off + the five tier colors.
         self.mcap_gradient_enabled = self._pending_mcap_gradient_enabled
         self.mcap_tier_colors = dict(self._pending_mcap_tier_colors)
+        self.mcap_tier_bounds = tuple(self._pending_mcap_tier_bounds)
         # Earnings live attrs — read by refresh_meta_label.
         self.earn_past_days = self._pending_earn_past_days
         self.earn_future_days = self._pending_earn_future_days
@@ -4273,16 +4364,37 @@ class ScannerApp(tk.Tk):
             font=small, bg=c["BG"], fg=c["CREDIT"],
         ).grid(row=24, column=2, columnspan=2, sticky="w")
 
-        def make_float_color_row(row, label_text, stored, theme_color, hint):
-            tk.Label(wrap, text=label_text, font=std, **lbl_conf).grid(
+        def make_float_color_row(row, label_text, stored, theme_color, hint,
+                                 parent=None, bound_var=None):
+            """One '<label> | [#hex] | swatch | hint' settings row.
+
+            ``parent`` lets the row be built inside a nested frame (the MCap
+            tiers live in one so six of them can't collide with this dialog's
+            hardcoded row numbers). ``bound_var`` inserts a market-cap cutoff
+            entry ahead of the color entry, shifting the remaining cells one
+            column right; pass the string ``"-"`` for the open-ended top tier,
+            which gets a static dash instead of an editable cutoff."""
+            host = parent if parent is not None else wrap
+            tk.Label(host, text=label_text, font=std, **lbl_conf).grid(
                 row=row, column=0, sticky="w", padx=(12, 6))
+            col = 1
+            if bound_var is not None:
+                if isinstance(bound_var, str):
+                    tk.Label(host, text=bound_var, font=std, width=8,
+                             anchor="w", **lbl_conf).grid(
+                        row=row, column=col, sticky="w", padx=(0, 6))
+                else:
+                    tk.Entry(host, textvariable=bound_var, width=8, font=std,
+                             **ent_conf).grid(
+                        row=row, column=col, sticky="w", padx=(0, 6))
+                col += 1
             var = tk.StringVar(value=stored)  # "" (= follow theme) or #RRGGBB
-            ent = tk.Entry(wrap, textvariable=var, width=10, font=std, **ent_conf)
-            ent.grid(row=row, column=1, sticky="w")
-            swatch = tk.Label(wrap, text="    ", bg=theme_color, width=3)
-            swatch.grid(row=row, column=2, sticky="w", padx=(6, 6))
-            tk.Label(wrap, text=hint, font=small, bg=c["BG"], fg=c["CREDIT"]).grid(
-                row=row, column=3, sticky="w")
+            ent = tk.Entry(host, textvariable=var, width=10, font=std, **ent_conf)
+            ent.grid(row=row, column=col, sticky="w")
+            swatch = tk.Label(host, text="    ", bg=theme_color, width=3)
+            swatch.grid(row=row, column=col + 1, sticky="w", padx=(6, 6))
+            tk.Label(host, text=hint, font=small, bg=c["BG"], fg=c["CREDIT"]).grid(
+                row=row, column=col + 2, sticky="w")
 
             def upd(*_):
                 v = var.get().strip()
@@ -4324,14 +4436,49 @@ class ScannerApp(tk.Tk):
             variable=var_mcap_grad_en, font=std, **dlg_cb_conf,
         ).grid(row=29, column=0, columnspan=3, sticky="w", padx=(12, 0))
 
+        # Six tiers x (cutoff + color + swatch + hint) will not fit the five
+        # flat rows this dialog reserved. Nest them in a frame the way the
+        # earnings-chart controls do at row 10, so err_lbl (35) and the
+        # button row (36) keep their hardcoded numbers.
+        mcap_box = tk.Frame(wrap, bg=c["BG"])
+        mcap_box.grid(row=30, column=0, columnspan=4, sticky="w")
+
         stored_tiers = getattr(self, "mcap_tier_colors", None) or MCAP_TIER_DEFAULT_COLORS
+        live_bounds = (getattr(self, "mcap_tier_bounds", None)
+                       or MCAP_TIER_BOUNDS)
+        tk.Label(
+            mcap_box,
+            text="  cutoff = the top of that tier (exclusive); "
+                 "190M / 2B / 200B all parse",
+            font=small, bg=c["BG"], fg=c["CREDIT"],
+        ).grid(row=0, column=0, columnspan=5, sticky="w")
+
         var_mcap_tiers = {}
+        var_mcap_bounds = {}
         for i, tier in enumerate(MCAP_TIER_KEYS):
+            if i < len(live_bounds):
+                bound_var = tk.StringVar(value=_fmt_mcap_bound(live_bounds[i]))
+                var_mcap_bounds[tier] = bound_var
+                slot = bound_var
+            else:
+                slot = "—"      # mega: open-ended, nothing to edit
             var_mcap_tiers[tier] = make_float_color_row(
-                30 + i, f"{MCAP_TIER_LABELS[tier]} (#hex)",
+                1 + i, f"{MCAP_TIER_LABELS[tier]} (#hex)",
                 stored_tiers.get(tier, MCAP_TIER_DEFAULT_COLORS[tier]),
                 MCAP_TIER_DEFAULT_COLORS[tier],
-                f"  blank = default {MCAP_TIER_DEFAULT_COLORS[tier]}")
+                f"  {_mcap_tier_range_text(tier, live_bounds)}  "
+                f"blank = default {MCAP_TIER_DEFAULT_COLORS[tier]}",
+                parent=mcap_box, bound_var=slot)
+
+        def _reset_mcap_bounds():
+            for j, tier in enumerate(MCAP_TIER_KEYS[:len(MCAP_TIER_BOUNDS)]):
+                var_mcap_bounds[tier].set(_fmt_mcap_bound(MCAP_TIER_BOUNDS[j]))
+
+        tk.Button(
+            mcap_box, text="Reset ranges", command=_reset_mcap_bounds,
+            font=small, **btn_conf,
+        ).grid(row=1 + len(MCAP_TIER_KEYS), column=1, sticky="w",
+               pady=(4, 0))
 
         err_lbl = tk.Label(wrap, text="", bg=c["BG"], fg=c["TXT_BAD"], font=std)
         err_lbl.grid(row=35, column=0, columnspan=4, sticky="w", pady=(8, 0))
@@ -4376,6 +4523,23 @@ class ScannerApp(tk.Tk):
                         text=f"{MCAP_TIER_LABELS[tier]} color must be #RRGGBB (or blank)")
                     return
                 mcap_tiers_resolved[tier] = tval or MCAP_TIER_DEFAULT_COLORS[tier]
+            # MCap tier cutoffs — reuse the finviz-format parser so "190M",
+            # "2B" and a bare "250000000" all work.
+            mcap_bounds_parsed = []
+            for tier in MCAP_TIER_KEYS[:len(MCAP_TIER_BOUNDS)]:
+                bval = var_mcap_bounds[tier].get().strip()
+                parsed = _parse_mcap_dollars(bval)
+                if parsed is None:
+                    err_lbl.config(
+                        text=f"{MCAP_TIER_LABELS[tier]} cutoff must look like "
+                             f"190M / 2B (got {bval!r})")
+                    return
+                mcap_bounds_parsed.append(parsed)
+            mcap_bounds_resolved, bounds_err = _validate_mcap_bounds(
+                mcap_bounds_parsed)
+            if bounds_err:
+                err_lbl.config(text=f"Market cap: {bounds_err}")
+                return
             # Validate windows
             try:
                 past_d = int(var_past.get().strip())
@@ -4405,6 +4569,7 @@ class ScannerApp(tk.Tk):
             self.float_color_enabled = bool(var_float_color_en.get())
             self.mcap_gradient_enabled = bool(var_mcap_grad_en.get())
             self.mcap_tier_colors = mcap_tiers_resolved
+            self.mcap_tier_bounds = mcap_bounds_resolved
             self.earn_past_days = past_d
             self.earn_future_days = future_d
             self.earn_future_color = color_future
@@ -4506,6 +4671,7 @@ class ScannerApp(tk.Tk):
                 "float_color_enabled": bool(self.float_color_enabled),
                 "mcap_gradient_enabled": bool(self.mcap_gradient_enabled),
                 "mcap_tier_colors": {k: str(v) for k, v in self.mcap_tier_colors.items()},
+                "mcap_tier_bounds": [float(v) for v in self.mcap_tier_bounds],
                 "earn_past_days": int(self.earn_past_days),
                 "earn_future_days": int(self.earn_future_days),
                 "earn_future_color": str(self.earn_future_color),
@@ -8415,7 +8581,8 @@ class ScannerApp(tk.Tk):
             return
         col = self.colors["FG"]
         if getattr(self, "mcap_gradient_enabled", True):
-            tier = _mcap_tier(_parse_mcap_dollars(mcap))
+            tier = _mcap_tier(_parse_mcap_dollars(mcap),
+                              getattr(self, "mcap_tier_bounds", None))
             if tier:
                 tier_colors = getattr(self, "mcap_tier_colors", None) or {}
                 col = tier_colors.get(tier) or MCAP_TIER_DEFAULT_COLORS[tier]
@@ -10743,6 +10910,7 @@ class ScannerApp(tk.Tk):
         # colors (default to the bright-red->bright-green ramp).
         self._pending_mcap_gradient_enabled: bool = True
         self._pending_mcap_tier_colors: dict = dict(MCAP_TIER_DEFAULT_COLORS)
+        self._pending_mcap_tier_bounds: tuple = MCAP_TIER_BOUNDS
         self._pending_search_visible: bool = False
         self._pending_search_kw: str = ""
         self._pending_search_date: str = ""
@@ -10869,6 +11037,15 @@ class ScannerApp(tk.Tk):
                     v = mtc.get(tier)
                     if isinstance(v, str) and self._is_valid_hex_color(v):
                         self._pending_mcap_tier_colors[tier] = v
+            # Tier cutoffs. Accepted only as a complete, strictly-ascending
+            # set — a partial or scrambled list silently reorders every band,
+            # so fall back to the defaults rather than half-honor it. A file
+            # written before this key existed simply gets the defaults.
+            mtb = data.get("mcap_tier_bounds")
+            if isinstance(mtb, (list, tuple)):
+                bounds, _why = _validate_mcap_bounds(mtb)
+                if bounds is not None:
+                    self._pending_mcap_tier_bounds = bounds
             self._pending_search_visible = bool(data.get("search_visible", False))
             # Sanitize on the way in as well as on the way out: settings
             # written by an older build can still carry a multi-line paste
@@ -11015,6 +11192,10 @@ class ScannerApp(tk.Tk):
                     (getattr(self, "mcap_tier_colors", None) or
                      MCAP_TIER_DEFAULT_COLORS).items()
                 },
+                "mcap_tier_bounds": [
+                    float(v) for v in (getattr(self, "mcap_tier_bounds", None)
+                                       or MCAP_TIER_BOUNDS)
+                ],
                 "search_visible": bool(self.search_visible.get()),
                 "search_kw": self.entry_search_kw.get(),
                 "search_date": self.entry_search_date.get(),

@@ -842,16 +842,115 @@ def _dedupe(rows: list[dict]) -> list[dict]:
 # track ONLY it. This section covers the complementary universe: ETFs that
 # hold a BASKET of securities (sector / broad-index / thematic funds, plus
 # the leveraged index/sector funds). Source is stockanalysis.com's free,
-# no-key JSON API, which returns each ETF's top-N holdings, sector mix,
+# no-key data route, which returns each ETF's top-N holdings, sector mix,
 # category, holding count, and a freshness date. See etf_holdings.EtfHoldings
 # for storage + the derived reverse (stock -> ETFs) index.
 
-STOCKANALYSIS_HOLDINGS_API = "https://api.stockanalysis.com/api/symbol/e/{sym}/holdings"
+# 2026-09-06: stockanalysis.com migrated off Next.js to SvelteKit and DELETED
+# the whole api.stockanalysis.com/api/symbol/... JSON API -- every symbol now
+# answers 404 {"status":404}. 404 isn't retryable, so the old client failed
+# 100% of the time while reporting nothing (see HoldingsFetchError below).
+# SvelteKit's own navigation data route carries the identical payload under
+# a flat "devalue" encoding, so only the transport changed:
+#   holdings[].n/.s/.as/.sh, sectors[].n/.w, infoTable.category, count, date.
+STOCKANALYSIS_HOLDINGS_API = "https://stockanalysis.com/etf/{sym}/holdings/__data.json"
 # stockanalysis returns top-25 holdings for free/anonymous access; cap to
 # match so a future source change can't bloat the stored payload.
 _HOLDINGS_TOP_N = 25
 # Polite pacing between per-ETF requests on the refresh daemon thread.
 _HOLDINGS_PACE_SEC = 0.35
+# Ceiling on how many per-ETF error strings get persisted into
+# etf_holdings.json. A site-wide outage produces one per fund; the file only
+# needs enough to diagnose it.
+_HOLDINGS_MAX_STORED_ERRORS = 25
+
+
+class HoldingsFetchError(Exception):
+    """A holdings fetch failed for a reason worth REPORTING (a non-200, an
+    unparseable body). Deliberately distinct from "this symbol just isn't an
+    ETF", which stays a quiet ``None``: the old client collapsed both into
+    None, so when the upstream API was deleted the refresh recorded zero
+    errors while failing on every single fund."""
+
+
+# ---- SvelteKit "devalue" flat-payload decoding -----------------------------
+# stockanalysis.com serves its route data as one flat array in which every
+# integer is an INDEX back into that same array (strings/numbers/bools sit
+# inline). Negative indices are sentinels. An array whose first element is a
+# string is a tagged custom type, not a list of indices.
+_DEVALUE_HOLE = object()
+_DEVALUE_SENTINELS = {
+    -1: _DEVALUE_HOLE, -2: None, -3: float("nan"),
+    -4: float("inf"), -5: float("-inf"), -6: -0.0,
+}
+
+
+def _devalue_unflatten(flat):
+    """Resolve a SvelteKit devalue flat array into ordinary nested Python.
+
+    Returns ``None`` if ``flat`` isn't a non-empty list. Results are memoized
+    per index BEFORE recursing into them, so a self-referential payload
+    terminates instead of blowing the stack."""
+    if not isinstance(flat, list) or not flat:
+        return None
+    memo: dict = {}
+
+    def rec(i):
+        # bool is an int subclass -- check it first or True/False become
+        # index lookups.
+        if isinstance(i, bool) or not isinstance(i, int):
+            return i
+        if i in _DEVALUE_SENTINELS:
+            return _DEVALUE_SENTINELS[i]
+        if i in memo:
+            return memo[i]
+        if i < 0 or i >= len(flat):
+            return None
+        v = flat[i]
+        if isinstance(v, list):
+            # ["Date", 12] / ["Map", ...] -- a tagged custom type, kept raw.
+            if v and isinstance(v[0], str):
+                memo[i] = v
+                return v
+            out: list = []
+            memo[i] = out          # memoize before descending (cycle guard)
+            for j in v:
+                out.append(rec(j))
+            return out
+        if isinstance(v, dict):
+            od: dict = {}
+            memo[i] = od
+            for k, j in v.items():
+                od[k] = rec(j)
+            return od
+        memo[i] = v
+        return v
+
+    return rec(0)
+
+
+def _extract_holdings_node(doc):
+    """Pull the holdings payload out of a decoded ``__data.json`` document.
+
+    Returns the first ``type == "data"`` node that unflattens to a dict
+    carrying a ``holdings`` key, or ``None`` when there is none -- which is
+    what a plain stock page (AAPL) or an unknown symbol returns."""
+    if not isinstance(doc, dict):
+        return None
+    for node in doc.get("nodes") or []:
+        if not (isinstance(node, dict) and node.get("type") == "data"):
+            continue
+        data = _devalue_unflatten(node.get("data"))
+        if isinstance(data, dict) and "holdings" in data:
+            return data
+    return None
+
+
+# A holding's symbol slot is not always a symbol. Swap-based funds report
+# contract artifacts there ("B.0 08.27.26"), and an ETF-of-ETFs holding is
+# prefixed "#" rather than "$" (NUGT holds "#GDX"). Accept only something
+# that can actually be a ticker.
+_HOLDING_TICKER_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,6}$")
 
 # Curated multi-holding ETF universe with known leverage multiples (bear =
 # negative, non-levered = None). Hardcoding leverage here is deliberate:
@@ -951,21 +1050,26 @@ def fetch_stockanalysis_holdings(
 
     Returns ``{"category", "sector_label", "count", "date", "holdings":
     [{ticker, name, weight}, ...]}`` (``mult`` is set by the caller from the
-    curated universe), or ``None`` if the symbol isn't a recognized ETF
-    (404) or the response is unusable. Raises only via the session for a
-    genuine network exhaustion the caller wants to log.
+    curated universe), or ``None`` when the symbol simply isn't an ETF (a 200
+    that carries no holdings node). Raises ``HoldingsFetchError`` for a
+    failure worth REPORTING -- a non-200, an exhausted retry, or a body that
+    won't parse -- so the caller can record why instead of silently
+    preserving stale data.
     """
     # Lazy import to avoid a hard import cycle and keep this module usable
     # standalone; etf_holdings imports nothing from here.
     from etf_holdings import derive_sector_label
 
-    url = STOCKANALYSIS_HOLDINGS_API.format(sym=symbol.upper().strip())
+    # Lowercase the path segment: /etf/SPY/... 301-redirects to /etf/spy/...,
+    # so uppercasing would spend a round-trip per ETF on the redirect.
+    url = STOCKANALYSIS_HOLDINGS_API.format(sym=symbol.lower().strip())
     r = _get_streamed_with_retry(session, url)
     if r is None:
-        return None
+        raise HoldingsFetchError("network error (all attempts failed)")
     try:
-        if r.status_code != 200:
-            return None
+        status = r.status_code
+        if status != 200:
+            raise HoldingsFetchError("HTTP %s" % status)
         body = _read_capped_bytes(r, _MAX_RESPONSE_BYTES)
     finally:
         try:
@@ -975,8 +1079,10 @@ def fetch_stockanalysis_holdings(
     try:
         payload = json.loads(body.decode("utf-8", "replace"))
     except (ValueError, json.JSONDecodeError):
-        return None
-    data = payload.get("data") if isinstance(payload, dict) else None
+        raise HoldingsFetchError("unparseable JSON body")
+    # A 200 with no holdings node means the symbol simply isn't an ETF (a
+    # stock page, or an unknown ticker). That's not an error worth logging.
+    data = _extract_holdings_node(payload)
     if not isinstance(data, dict):
         return None
     raw_holdings = data.get("holdings")
@@ -988,7 +1094,13 @@ def fetch_stockanalysis_holdings(
         if not isinstance(h, dict):
             continue
         nm = str(h.get("n") or "").strip()
-        tk = str(h.get("s") or "").lstrip("$").upper().strip()
+        # "$NVDA" for a stock, "#GDX" for a held ETF -- strip either marker.
+        tk = str(h.get("s") or "").lstrip("$#").upper().strip()
+        if tk and not _HOLDING_TICKER_RE.match(tk):
+            # A swap contract artifact ("B.0 08.27.26") sitting in the symbol
+            # slot. Treat it as symbol-less so the swap-description resolver
+            # below still gets its chance at the row.
+            tk = ""
         if not tk:
             # No share ticker — this is a swap / cash row. Leveraged &
             # inverse funds hold total-return SWAPS reported by name only
@@ -1003,9 +1115,11 @@ def fetch_stockanalysis_holdings(
                     except Exception:  # noqa: BLE001 — resolver must never break a fetch
                         resolved = None
                     if resolved:
-                        tk = str(resolved).upper().strip()
-                        if not nm:
-                            nm = company
+                        cand = str(resolved).upper().strip()
+                        if _HOLDING_TICKER_RE.match(cand):
+                            tk = cand
+                            if not nm:
+                                nm = company
             if not tk:
                 continue
         if tk in seen:
@@ -1116,4 +1230,19 @@ def scrape_etf_holdings(
 
     _log(progress_cb, f"Done. {ok}/{n} ETFs fetched, {len(profiles)} profiles, "
                       f"{len(errors)} error(s).")
+    if n and ok == 0:
+        # A total outage used to be indistinguishable from a clean run: every
+        # fund fell through to "preserving prior" and the saved errors list
+        # was empty, so etf_holdings.json quietly went stale for months. Say
+        # it plainly, in the log and in the stored errors.
+        _log(progress_cb,
+             f"!! 0/{n} fetched — the holdings source failed for EVERY ETF. "
+             f"stockanalysis.com has probably changed its route again; the "
+             f"stored map is UNCHANGED (still showing its previous refresh).")
+        errors.insert(0, f"TOTAL FAILURE: 0/{n} ETFs fetched from "
+                         f"{STOCKANALYSIS_HOLDINGS_API}")
+    if len(errors) > _HOLDINGS_MAX_STORED_ERRORS:
+        # Don't write 130 near-identical strings into etf_holdings.json.
+        extra = len(errors) - _HOLDINGS_MAX_STORED_ERRORS
+        errors = errors[:_HOLDINGS_MAX_STORED_ERRORS] + [f"(+{extra} more)"]
     return profiles, errors
