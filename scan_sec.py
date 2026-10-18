@@ -6,7 +6,7 @@
 # running build can be identified without checking file dates, and baked into
 # the exe's file-version resource via TNS.spec / version_info.txt. Keep it in
 # step with the git tag (vX.Y.Z).
-__version__ = "2.5.0"
+__version__ = "2.5.1"
 
 import sys
 import os
@@ -800,7 +800,15 @@ class RSSWorker:
         # floor. Its 100-item pulls are ~15x deeper than the 60s loop
         # needs anyway, so nothing is actually missed.
         ("ST", "https://www.stocktitan.net/rss/", 300.0),
-        ("YH", "https://finance.yahoo.com/news/rssindex", 0.0),
+        # Replaced 2026-10-18: Yahoo retired finance.yahoo.com/news/rssindex
+        # and every other finance.yahoo.com RSS path (/rss/, /rss/topstories,
+        # /news/rss) — all 404 with the "sad panda" page for any UA, so it is
+        # not a block. The feeds.finance.yahoo.com headline feed survives;
+        # keyed on ^GSPC it is the broad market-news stream the old index
+        # carried (~20 items/pull). Listing more symbols doesn't add depth —
+        # the feed caps at ~20 items however many you ask for.
+        ("YH", "https://feeds.finance.yahoo.com/rss/2.0/headline"
+               "?s=%5EGSPC&region=US&lang=en-US", 0.0),
     )
 
     def __init__(self):

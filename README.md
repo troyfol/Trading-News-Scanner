@@ -1,6 +1,6 @@
 # Morning Scanner
 
-![version](https://img.shields.io/badge/version-2.5.0-blue) ![platform](https://img.shields.io/badge/platform-Windows-lightgrey) ![license](https://img.shields.io/badge/license-MIT-green)
+![version](https://img.shields.io/badge/version-2.5.1-blue) ![platform](https://img.shields.io/badge/platform-Windows-lightgrey) ![license](https://img.shields.io/badge/license-MIT-green)
 
 A real-time news, SEC filing, and earnings scanner for active traders on Windows. Morning Scanner floats above your charting platform, automatically detects which ticker you're viewing, and pulls up relevant news headlines, SEC filing activity, float and short data, earnings proximity, and more — switching automatically as you change symbols.
 
@@ -51,6 +51,8 @@ News origins fail in a way that's easy to miss: they accept the connection and t
 Net effect: one dead source costs you one red dot, not slower news everywhere.
 
 > **Note on GlobeNewswire:** it was replaced by Stocktitan on 2026-08-11. Its edge began completing the TLS handshake and then never responding — every path on the host, including the homepage, read-timed-out, and a VPN made no difference. Stocktitan also carries a ticker in ~94% of its headlines (vs ~37% for the other wires), which is what the per-symbol news filter matches on.
+
+> **Note on Yahoo Finance:** in October 2026 Yahoo retired `finance.yahoo.com/news/rssindex` along with every other `finance.yahoo.com` RSS path. They all answer `404` with Yahoo's error page, whatever the client, which turned the YH dot red. The YH wire now reads Yahoo's surviving headline feed (`feeds.finance.yahoo.com/rss/2.0/headline`), keyed on the S&P 500 (`^GSPC`). That is the same broad market-news stream the old index carried, at about 20 headlines per pull.
 
 ## Earnings chart history window
 
@@ -163,7 +165,7 @@ This bundles Tcl/Tk, the `single_stock_etfs.json` + `etf_holdings.json` seeds, a
 | --- | --- |
 | [Finviz](https://finviz.com) | Company name, float, short interest, market cap, relative volume, earnings date, EPS / sales surprise, catalyst text |
 | [SEC EDGAR](https://data.sec.gov) | CIK mapping, filing recency, S-3 shelf registration, XBRL company-facts (via the `submissions` / `companyfacts` JSON APIs) |
-| [PRNewswire](https://www.prnewswire.com) · [Stocktitan](https://www.stocktitan.net) · [Yahoo Finance](https://finance.yahoo.com) | Press-release and market-news headlines (RSS) |
+| [PRNewswire](https://www.prnewswire.com) · [Stocktitan](https://www.stocktitan.net) · [Yahoo Finance](https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5EGSPC&region=US&lang=en-US) | Press-release and market-news headlines (RSS) |
 | [Polygon](https://polygon.io) | Optional historical news for the Historical Lookup |
 | [stockanalysis.com](https://stockanalysis.com) | Multi-holding ETF holdings, sector mix, and category for the ETF indicators (refreshed from Settings) |
 

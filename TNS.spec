@@ -25,23 +25,30 @@ if not _gen_files:
 
 def _tcltk_paths():
     """Resolve the Tcl/Tk 8.6 DLLs + data dirs. Prefer the validated
-    C:/Python310 layout this build machine uses (so the current build is
-    byte-for-byte unchanged); fall back to the build interpreter's own
-    install only if C:/Python310 is absent, so a second machine / CI can
-    build without it."""
+    C:/Python310 layout (python.org: DLLs/ + tcl/); fall back to the build
+    interpreter's own install, in either the python.org layout or the
+    conda one (Library/bin + Library/lib). C:/Python310 was removed from
+    the build machine 2026-09-20, and the venv has since been rebuilt on a
+    conda base, so the conda layout is the one that resolves today."""
     candidates = [
         r'C:/Python310',
         os.path.dirname(sys.executable),
         sys.prefix,
         getattr(sys, 'base_prefix', sys.prefix),
     ]
-    for base in candidates:
-        tcl_dll = os.path.join(base, 'DLLs', 'tcl86t.dll')
-        tk_dll = os.path.join(base, 'DLLs', 'tk86t.dll')
-        tcl_dir = os.path.join(base, 'tcl', 'tcl8.6')
-        tk_dir = os.path.join(base, 'tcl', 'tk8.6')
-        if all(os.path.exists(p) for p in (tcl_dll, tk_dll, tcl_dir, tk_dir)):
-            return tcl_dll, tk_dll, tcl_dir, tk_dir
+    layouts = [
+        (('DLLs',), ('tcl',)),                      # python.org
+        (('Library', 'bin'), ('Library', 'lib')),   # conda
+    ]
+    for dll_sub, data_sub in layouts:
+        for base in candidates:
+            tcl_dll = os.path.join(base, *dll_sub, 'tcl86t.dll')
+            tk_dll = os.path.join(base, *dll_sub, 'tk86t.dll')
+            tcl_dir = os.path.join(base, *data_sub, 'tcl8.6')
+            tk_dir = os.path.join(base, *data_sub, 'tk8.6')
+            if all(os.path.exists(p)
+                   for p in (tcl_dll, tk_dll, tcl_dir, tk_dir)):
+                return tcl_dll, tk_dll, tcl_dir, tk_dir
     print("WARNING [TNS.spec]: could not locate Tcl/Tk 8.6 under any of "
           "%r; using the C:/Python310 literals (build may fail here)."
           % candidates)
@@ -50,6 +57,19 @@ def _tcltk_paths():
 
 
 _TCL_DLL, _TK_DLL, _TCL_DIR, _TK_DIR = _tcltk_paths()
+
+# A venv on a conda base: conda keeps the DLLs the stdlib extension modules
+# link against (libssl-3/libcrypto-3 for _ssl, ffi for _ctypes, liblzma,
+# LIBBZ2, libexpat, sqlite3) in Library/bin. Conda's own python adds that
+# to its DLL search at startup, but PyInstaller can't see it from inside a
+# venv, so the build "succeeds" with those DLLs missing and the frozen exe
+# can't open an HTTPS socket. PyInstaller's Windows resolver falls back to
+# PATH, so put Library/bin there. A python.org base has no Library/bin, so
+# this is a no-op for it.
+_conda_bin = os.path.join(getattr(sys, 'base_prefix', sys.prefix),
+                          'Library', 'bin')
+if os.path.isdir(_conda_bin):
+    os.environ['PATH'] = _conda_bin + os.pathsep + os.environ.get('PATH', '')
 
 # matplotlib ships data files (font cache, stylelib, mpl-data) that
 # the runtime needs. PyInstaller's hooks usually catch these but
